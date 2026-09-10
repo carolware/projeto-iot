@@ -17,6 +17,7 @@ import math
 import os
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -32,7 +33,7 @@ load_dotenv()
 
 BROKER      = os.getenv("MQTT_BROKER", "broker.hivemq.com")
 PORT        = int(os.getenv("MQTT_PORT", "1883"))
-CLIENT_ID   = "gateway-incendio-florestal"
+CLIENT_ID   = f"gateway-sentinela-{uuid.uuid4().hex[:10]}"
 TOPIC_BASE  = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
 SUB_PATTERN = f"{TOPIC_BASE}/+/sensor/+"   # escuta todos os sensores
 FIRMS_KEY   = os.getenv("FIRMS_MAP_KEY", "")

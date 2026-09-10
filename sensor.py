@@ -4,9 +4,9 @@ sensor.py — Sensor IoT com dados REAIS
 Fontes de dados:
   - Temperatura / Umidade → Open-Meteo API  (gratuita, sem chave de API)
                             https://api.open-meteo.com
-  - Fumaça (índice 0-100) → NASA FIRMS API  (chave em .env)
-                            Focos de calor detectados por satélite VIIRS/MODIS
-                            convertidos em índice percentual por zona.
+  - Índice de fogo (0-100) → NASA FIRMS API  (chave em .env)
+                             Focos de calor detectados por satélite VIIRS/MODIS
+                             convertidos em indicador qualitativo por zona.
   - Ruído de sensor       → variação gaussiana (±1 °C, ±2 % umidade) sobre os
                             dados reais, simulando imperfeições do hardware.
 
@@ -16,8 +16,9 @@ Política de cache:
   Entre atualizações os valores anteriores + ruído são publicados, garantindo
   alta taxa de mensagens MQTT sem consumir cota desnecessária das APIs.
 
-Zonas monitoradas (Goiás · Tocantins · Pará):
-  anapolis | formosa | pirinopolis | sandolandia | novo-progresso
+Zonas monitoradas (Goiás · Tocantins · Pará · Maranhão):
+  anapolis | formosa | pirinopolis | jaragua | sandolandia |
+  novo-progresso | mirador | mateiros | lagoa-da-confusao
 """
 
 import json
@@ -25,6 +26,7 @@ import logging
 import os
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
@@ -39,7 +41,7 @@ load_dotenv()
 
 BROKER       = os.getenv("MQTT_BROKER", "broker.hivemq.com")
 PORT         = int(os.getenv("MQTT_PORT", "1883"))
-CLIENT_ID    = "sensor-real-monitoramento-br"
+CLIENT_ID    = f"sensor-sentinela-{uuid.uuid4().hex[:10]}"
 TOPIC_PREFIX = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
 FIRMS_KEY    = os.getenv("FIRMS_MAP_KEY", "")
 FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")

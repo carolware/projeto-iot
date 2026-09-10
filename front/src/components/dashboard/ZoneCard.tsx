@@ -97,14 +97,14 @@ export function ZoneHero({ zone, index }: { zone: Zone; index: number }) {
           <div className={`mt-1 font-mono text-[10px] ${dH.cls}`}>{dH.text}</div>
         </div>
         <div>
-          <Metric label="FUMAÇA" value={String(zone.smoke)} unit="%" tone={smokeTone(zone)} dot="bg-danger" />
+          <Metric label="ÍNDICE FOGO" value={String(zone.smoke)} unit=" pts" tone={smokeTone(zone)} dot="bg-danger" />
           <div className={`mt-1 font-mono text-[10px] ${dS.cls}`}>{dS.text}</div>
         </div>
       </div>
 
       <div className="mt-3 flex flex-col md:flex-row md:items-center gap-3">
         <div className="flex-1 flex items-center justify-between">
-          <span className="font-mono text-[10px] text-faint">FUMAÇA · ÚLTIMAS LEITURAS</span>
+          <span className="font-mono text-[10px] text-faint">ÍNDICE DE FOGO · ÚLTIMAS LEITURAS</span>
           <div className="flex items-end gap-[3px] h-8">
             {zone.smokeHistory.map((v, i) => (
               <span
@@ -118,10 +118,10 @@ export function ZoneHero({ zone, index }: { zone: Zone; index: number }) {
         {(zone.risk === "alto" || zone.risk === "critico") && (
           <div className="rounded border border-warn/40 bg-warn/10 px-3 py-2">
             <div className="font-mono text-[10px] text-warn tracking-wide">
-              ⚠ REGRA DISPARADA · FUMAÇA {zone.smoke}% + UMIDADE {zone.humidity}%
+              ⚠ REGRA DISPARADA · ÍNDICE {zone.smoke} + UMIDADE {zone.humidity}%
             </div>
             <div className="mt-1 font-mono text-[10px] text-faint">
-              → consulta FIRMS {zone.firmsConfirmed ? `confirmada · conf ${zone.firmsConf}` : "agendada"} · {zone.coords}
+              → FIRMS {zone.firmsConfirmed ? `${zone.firmsHotspots.length} foco(s) detectado(s)` : "sem foco na última varredura"} · {zone.coords}
             </div>
           </div>
         )}
@@ -147,7 +147,7 @@ export function ZoneCard({ zone, index }: { zone: Zone; index: number }) {
           {zone.sensorId} · {zone.coords}
         </div>
         <div className="mt-3 grid grid-cols-3 gap-2 font-mono tabular-nums text-faint">
-          {["TEMP", "UMID.", "FUMAÇA"].map((l) => (
+          {["TEMP", "UMID.", "ÍNDICE"].map((l) => (
             <div key={l} className="text-[10px]">
               {l}
               <div className="text-[15px] mt-0.5">—</div>
@@ -186,8 +186,8 @@ export function ZoneCard({ zone, index }: { zone: Zone; index: number }) {
           <div className={`text-[15px] mt-0.5 ${humTone(zone)}`}>{zone.humidity}%</div>
         </div>
         <div className="text-[10px] text-faint">
-          FUMAÇA
-          <div className={`text-[15px] mt-0.5 ${smokeTone(zone)}`}>{zone.smoke}%</div>
+          ÍNDICE
+          <div className={`text-[15px] mt-0.5 ${smokeTone(zone)}`}>{zone.smoke}</div>
         </div>
       </div>
     </article>

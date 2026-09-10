@@ -26,8 +26,7 @@ const RISK_LABEL: Record<string, string> = {
 };
 
 // Ponto central: Brasil Central ↔ Amazônia
-export const MAP_CENTER: [number, number] = [-11.3, -49.5];
-export const FIRMS_URL = "https://firms.modaps.eosdis.nasa.gov/map/#d:24hrs;@-12,-51,6z";
+const MAP_CENTER: [number, number] = [-11.3, -49.5];
 
 function ZoneMarkers({ zones, windowHours }: { zones: Zone[]; windowHours: number }) {
   return (
@@ -80,7 +79,7 @@ function ZoneMarkers({ zones, windowHours }: { zones: Zone[]; windowHours: numbe
                 </div>
                 <div>Temperatura: {zone.temp} °C</div>
                 <div>Umidade: {zone.humidity} %</div>
-                <div>Fumaça: {zone.smoke} %</div>
+                <div>Índice de fogo: {zone.smoke} pontos</div>
                 <div style={{ marginTop: 4, fontSize: 11 }}>Sensor: {zone.sensorId}</div>
                 <div style={{ marginTop: 4 }}>Área FIRMS: raio de {zone.firmsRadiusKm} km</div>
                 <div style={{ color: visibleHotspots.length ? "#ef4444" : "#16a34a", fontWeight: "bold" }}>

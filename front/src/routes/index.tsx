@@ -57,7 +57,7 @@ function Index() {
           <div className="hidden lg:flex items-center gap-2 font-mono text-[10px] text-faint tracking-[0.2em]">
             <span>POSTO DE VIGILÂNCIA</span>
             <span className="text-hair">/</span>
-            <span>GO · TO · AMAZÔNIA PARAENSE</span>
+            <span>GO · TO · PA · MA</span>
           </div>
           <div className="ml-auto flex items-center gap-4 sm:gap-5 font-mono text-[11px]">
             <div className="flex items-center gap-1.5">
@@ -107,7 +107,7 @@ function Index() {
               <span className="text-faint">ZONAS</span> <span className="text-fg tabular-nums ml-1">{zones.length}</span>
             </div>
             <div>
-              <span className="text-faint">FUMAÇA ALTA</span>{" "}
+              <span className="text-faint">ÍNDICE ALTO</span>{" "}
               <span className="text-warn tabular-nums ml-1">{highSmoke}</span>
             </div>
             <div>

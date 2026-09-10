@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
@@ -28,7 +29,7 @@ load_dotenv()
 
 BROKER    = os.getenv("MQTT_BROKER", "broker.hivemq.com")
 PORT      = int(os.getenv("MQTT_PORT", "1883"))
-CLIENT_ID = "atuador-incendio-florestal"
+CLIENT_ID = f"atuador-sentinela-{uuid.uuid4().hex[:10]}"
 TOPIC_BASE   = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
 SUB_PATTERN  = f"{TOPIC_BASE}/+/atuador/alerta"   # escuta todos os alertas
 

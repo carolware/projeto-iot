@@ -80,6 +80,7 @@ O namespace MQTT adota hierarquia em quatro níveis para possibilitar subscriç�
 | Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/umidade`                 | Umidade relativa (%)               |
 | Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/fumaca`                  | Índice estimado de fumaça (0–100)  |
 | GW → Atuador | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/atuador/alerta`                 | Comando de alerta e ação           |
+| GW → Dashboard | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/satelite/firms`               | Focos FIRMS, coordenadas e metadados |
 
 O gateway subscreve o padrão `sentinela-iot-2026-joao-carol/monitoramento-br/+/sensor/+` (wildcard `+` = um nível), recebendo automaticamente todos os sensores de todas as zonas cadastradas.
 
@@ -107,7 +108,7 @@ Sensor          Broker MQTT        Gateway         NASA FIRMS       Atuador
 
 ### 3.1 Coletor de Telemetria (`sensor.py`)
 
-O coletor representa a camada de aquisição IoT de cinco zonas geográficas. Temperatura e umidade são obtidas da Open-Meteo para as coordenadas de cada zona. Os focos de calor e o FRP são consultados na NASA FIRMS e convertidos em um **índice qualitativo estimado de fumaça** para manter compatibilidade com o motor acadêmico de regras. Pequeno ruído gaussiano representa a incerteza que existiria em sensores físicos.
+O coletor representa a camada de aquisição IoT de nove zonas geográficas. Temperatura e umidade são obtidas da Open-Meteo para as coordenadas de cada zona. Os focos de calor e o FRP são consultados na NASA FIRMS e convertidos em um **índice qualitativo estimado de fumaça** para manter compatibilidade com o motor acadêmico de regras. Pequeno ruído gaussiano representa a incerteza que existiria em sensores físicos.
 
 > **Limitação científica:** a NASA FIRMS não mede “percentual de fumaça”. Ela detecta anomalias térmicas e fogo ativo. Portanto, o campo `fumaca` é um índice derivado/proxy, e não uma concentração atmosférica medida. Uma medição real de fumaça local exigiria hardware como MQ-2 ou um serviço de qualidade do ar com PM2.5.
 
@@ -150,7 +151,7 @@ Neste protótipo acadêmico, a combinação entre índice elevado e baixa umidad
 
 #### 3.2.3 Integração NASA FIRMS
 
-Quando o risco é **médio ou superior**, o gateway consulta a API FIRMS com um bounding box de ±0.15° (≈16 km) ao redor das coordenadas da zona. A consulta usa a fonte **VIIRS_SNPP_NRT** (Visible Infrared Imaging Radiometer Suite — Suomi NPP, Near Real-Time), com resolução espacial de 375 m e latência de ≈3 horas.
+O gateway consulta periodicamente a API FIRMS para **todas as zonas**, independentemente do risco meteorológico, usando um bounding box de ±0.15° (≈16,7 km) ao redor do centro monitorado. Isso permite que o mapa revele um foco orbital mesmo quando temperatura e umidade locais ainda estão normais. A fonte padrão é **VIIRS_SNPP_NRT** (Visible Infrared Imaging Radiometer Suite — Suomi NPP, Near Real-Time), com resolução nominal de 375 m e latência variável em função da passagem orbital e do processamento.
 
 **Endpoint consultado:**
 ```
@@ -159,12 +160,15 @@ GET https://firms.modaps.eosdis.nasa.gov/api/area/csv
     /{west},{south},{east},{north}/{days}
 ```
 
-O CSV retornado contém campos `latitude`, `longitude`, `brightness`, `frp` (Fire Radiative Power, em MW), `confidence` e outros. O gateway extrai:
-- **Número de focos** na área
-- **FRP máximo** (MW) — potência radiativa do fogo e proxy de sua intensidade
-- **Distância mínima** ao sensor (cálculo euclidiano em graus, convertido para km com fator 111 km/°)
+O CSV retornado contém campos `latitude`, `longitude`, `brightness`, `frp` (Fire Radiative Power, em MW), `confidence`, `satellite`, `instrument`, `acq_date`, `acq_time` e `daynight`. O gateway preserva cada detecção individual e calcula:
+- **coordenadas exatas reportadas pelo produto orbital**;
+- **data e horário de aquisição**;
+- **satélite, instrumento e confiança**;
+- **FRP individual e FRP máximo da área**;
+- **distância à cidade**, calculada pela fórmula de Haversine;
+- **número total de focos** dentro da caixa pesquisada.
 
-Um mecanismo de **cooldown** (padrão: 60 s) evita requisições excessivas à API para a mesma zona.
+O resultado completo é publicado com `retain=true` no tópico `satelite/firms`, permitindo que dashboards recém-conectados recebam a última varredura. O mapa desenha o raio de pesquisa, as cidades e os focos reais, com filtros de 6, 12 e 24 horas. Um cooldown padrão de **600 segundos** limita requisições repetidas.
 
 #### 3.2.4 Publicação de Alertas
 
@@ -172,7 +176,7 @@ Quando o risco é **alto ou crítico**, o gateway publica no tópico `atuador/al
 
 ```json
 {
-  "zona": "alto-paraiso",
+  "zona": "mateiros",
   "risco": "critico",
   "temperatura": 47.2,
   "umidade": 11.0,
@@ -202,11 +206,13 @@ Um mecanismo de **cooldown por zona × ação** (padrão: 30 s) previne o dispar
 
 Interface web desenvolvida com **React 19**, **TypeScript**, **TanStack Router/Start**, **Vite 8** e **Tailwind CSS v4**. A geovisualização utiliza **Leaflet/React-Leaflet 5**, e a integração em tempo real usa **mqtt.js** sobre WebSocket seguro. O projeto preserva configuração compatível com Lovable, mas pode ser executado e implantado independentemente da plataforma.
 
-O dashboard opera por padrão em modo real: o módulo `iot.ts` estabelece uma conexão MQTT sobre WebSocket seguro (WSS), subscreve os tópicos de telemetria e alerta e atualiza a interface imediatamente. O módulo `sim.ts` permanece disponível como modo de demonstração independente; para utilizá-lo, defina `VITE_DATA_MODE=sim` em `front/.env`.
+O dashboard opera por padrão em modo real: o módulo `iot.ts` estabelece uma conexão MQTT sobre WebSocket seguro (WSS), subscreve os tópicos de telemetria, alertas e resultados orbitais FIRMS e atualiza a interface imediatamente. O módulo `sim.ts` permanece disponível como modo de demonstração independente; para utilizá-lo, defina `VITE_DATA_MODE=sim` em `front/.env`.
 
 **Funcionalidades do dashboard:**
 - Visão geral de todas as zonas monitoradas com níveis de risco em tempo real
-- Mapa geográfico Leaflet interativo e expansível, com marcadores coloridos por risco e acesso ao mapa NASA FIRMS
+- Mapa Leaflet interativo e expansível, com círculos das áreas pesquisadas e cidades coloridas por risco
+- Focos FIRMS nas coordenadas orbitais reais, com tamanho/cor por FRP e popup de horário, satélite, instrumento, confiança e distância
+- Filtro temporal no mapa para as últimas 6, 12 ou 24 horas
 - Feed de eventos ao vivo (crítico, regra, satélite, telemetria, sistema, atuador)
 - Log de eventos estilo terminal
 - Botões de comando MQTT (acionar brigada, reforçar, silenciar) com feedback visual
@@ -309,7 +315,7 @@ O frontend possui configuração própria em `front/.env`. O navegador não util
 | `FIRMS_RAIO_GRAUS`   | 0.15                | Raio de busca em graus (~16 km)          |
 | `SENSOR_REFRESH_METEO_MIN` | 10             | Atualização Open-Meteo no coletor        |
 | `SENSOR_REFRESH_FIRMS_MIN` | 30             | Atualização FIRMS no coletor              |
-| `FIRMS_COOLDOWN_SEG` | 60                  | Cooldown entre consultas FIRMS por zona  |
+| `FIRMS_COOLDOWN_SEG` | 600                 | Cooldown entre varreduras FIRMS por zona |
 | `ALERTA_COOLDOWN_SEG`| 30                  | Intervalo mínimo entre alertas da mesma zona |
 | `ACAO_COOLDOWN_SEG`  | 30                  | Cooldown entre ações repetidas (atuador) |
 
@@ -317,59 +323,43 @@ O frontend possui configuração própria em `front/.env`. O navegador não util
 
 ## 6. Mapeamento de Zonas
 
-As zonas monitoradas cobrem localidades de Goiás, Tocantins e uma localidade representativa da Amazônia paraense:
+As zonas monitoradas cobrem localidades de Goiás, Tocantins, Pará e Maranhão:
 
-| Zona              | UF | Lat       | Lon       | Sensor ID |
-|-------------------|----|-----------|-----------|-----------|
-| Anápolis          | GO | -16.3267  | -48.9530  | GO-AN-01  |
-| Formosa           | GO | -15.5372  | -47.3372  | GO-FO-02  |
-| Pirenópolis       | GO | -15.8558  | -48.9597  | GO-PI-03  |
-| Sandolândia       | TO | -12.5408  | -49.9192  | TO-SA-04  |
-| Novo Progresso    | PA | -7.1261   | -55.3853  | PA-NP-05  |
+| Zona              | UF | Lat       | Lon       | Sensor ID | Critério |
+|-------------------|----|-----------|-----------|-----------|----------|
+| Anápolis          | GO | -16.3267  | -48.9530  | GO-AN-01  | Zona solicitada |
+| Formosa           | GO | -15.5372  | -47.3372  | GO-FO-02  | Zona solicitada |
+| Pirenópolis       | GO | -15.8558  | -48.9597  | GO-PI-03  | Zona solicitada |
+| Jaraguá           | GO | -15.7529  | -49.3344  | GO-JA-04  | Zona solicitada |
+| Sandolândia       | TO | -12.5408  | -49.9192  | TO-SA-05  | Zona solicitada |
+| Novo Progresso    | PA | -7.1261   | -55.3853  | PA-NP-06  | Representante da Amazônia paraense |
+| Mirador           | MA | -6.3745   | -44.3683  | MA-MI-07  | Destaque nacional de área queimada em 2025 |
+| Mateiros          | TO | -10.5464  | -46.4168  | TO-MA-08  | Destaque nacional de área queimada em 2025 |
+| Lagoa da Confusão | TO | -10.7906  | -49.6199  | TO-LC-09  | Destaque nacional de área queimada em 2025 |
 
-Como “Amazônia” é uma região extensa, Novo Progresso (PA) foi adotada como ponto representativo. Para alterar as coordenadas, edite `ZONA_COORDS` em `sensor.py` e `gateway.py` e mantenha as definições do frontend sincronizadas.
+A seleção dos três destaques adicionais usa o recorte de **área queimada municipal em 2025** divulgado pelo MapBiomas Fogo, e não uma afirmação permanente sobre a quantidade de focos. Rankings variam conforme período e indicador. Como “Amazônia” é uma região extensa, Novo Progresso (PA) permanece como ponto representativo. Para alterar coordenadas, mantenha `sensor.py`, `gateway.py`, `iot.ts` e `sim.ts` sincronizados.
 
 ---
 
 ## 7. Fluxo de Decisão Completo
 
 ```
-                    ┌──────────────────────┐
-                    │  Nova leitura MQTT   │
-                    │  (temp/umid/fumaca)  │
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────▼───────────┐
-                    │  Leitura completa?   │
-                    │  (3 sensores ok)     │
-                    └──────────┬───────────┘
-                          Sim  │
-                    ┌──────────▼───────────┐
-                    │  Avaliar Risco       │
-                    │  (motor de regras)   │
-                    └──────────┬───────────┘
-                               │
-              ┌────────────────┼────────────────┐
-           Baixo               Médio          Alto/Crítico
-              │                │                │
-           Ignorar     ┌───────▼────────┐  ┌───▼───────────┐
-                        │ Cooldown       │  │ Cooldown       │
-                        │ expirou?       │  │ expirou?       │
-                        └───────┬────────┘  └───────┬────────┘
-                            Sim │               Sim  │
-                        ┌───────▼────────┐  ┌───────▼────────┐
-                        │ Consulta FIRMS │  │ Consulta FIRMS │
-                        └───────┬────────┘  └───────┬────────┘
-                                │                   │
-                           Log resultado    ┌───────▼────────┐
-                                            │ Pub alerta     │
-                                            │ MQTT atuador   │
-                                            └───────┬────────┘
-                                                    │
-                                            ┌───────▼────────┐
-                                            │  Atuador       │
-                                            │  executa ação  │
-                                            └────────────────┘
+Open-Meteo ──► coletor ──► MQTT sensor ──► gateway ──► regra de risco
+                                               │              │
+                                               │              └─ alto/crítico ─► alerta MQTT ─► atuador
+                                               │
+                                               └─ a cada 600 s ─► NASA FIRMS
+                                                                      │
+                                                                      ├─ coordenadas dos focos
+                                                                      ├─ FRP / confiança / satélite
+                                                                      ├─ horário / período
+                                                                      └─ distância por Haversine
+                                                                                │
+                                                                                ▼
+                                                                  MQTT satelite/firms (retido)
+                                                                                │
+                                                                                ▼
+                                                                  dashboard + mapa interativo
 ```
 
 ---
@@ -423,6 +413,7 @@ projeto-iot/
 - **Open-Meteo Weather API** — dados meteorológicos atuais por coordenada. Disponível em: [https://open-meteo.com/](https://open-meteo.com/)
 - **VIIRS 375m Active Fire Product**. Schroeder, W. et al. *Remote Sensing of Environment*, 2014.
 - **INPE — Programa Queimadas**. Instituto Nacional de Pesquisas Espaciais. Disponível em: [https://queimadas.dgi.inpe.br/](https://queimadas.dgi.inpe.br/)
+- **MapBiomas Fogo — Mapeamento Anual**. Estatísticas de área queimada por município, inclusive 2025. Disponível em: [https://brasil.mapbiomas.org/iniciativas-e-produtos/fogo/mapeamento-anual/anual/](https://brasil.mapbiomas.org/iniciativas-e-produtos/fogo/mapeamento-anual/anual/)
 - **paho-mqtt** — Eclipse Foundation. Python Client for MQTT. Disponível em: [https://github.com/eclipse/paho.mqtt.python](https://github.com/eclipse/paho.mqtt.python)
 - **TanStack Start** — Documento oficial. Disponível em: [https://tanstack.com/start](https://tanstack.com/start)
 - **Lovable Platform**. Disponível em: [https://lovable.dev/](https://lovable.dev/)
