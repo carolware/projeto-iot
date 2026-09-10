@@ -6,7 +6,7 @@
 
 ## Resumo
 
-Este projeto apresenta a concepção, implementação e integração de uma arquitetura IoT distribuída para a detecção precoce de incêndios florestais em tempo real. O sistema combina sensores virtuais multiparamétricos, comunicação assíncrona via protocolo MQTT, raciocínio baseado em regras no componente gateway e validação geoespacial por meio da API pública NASA FIRMS (*Fire Information for Resource Management System*). A solução é complementada por um dashboard web reativo denominado **SENTINELA**, desenvolvido com React/TanStack Start e exibido em plataforma Lovable. A arquitetura implementa o paradigma *edge-to-cloud* com filtragem progressiva de dados, reduzindo tráfego de rede e latência de resposta a eventos críticos.
+Este projeto apresenta a concepção, implementação e integração de uma arquitetura IoT distribuída para o monitoramento de incêndios florestais em tempo quase real. O sistema combina dados meteorológicos atuais da Open-Meteo, detecções orbitais de focos de calor da NASA FIRMS (*Fire Information for Resource Management System*), comunicação assíncrona via protocolo MQTT e raciocínio baseado em regras no gateway. A solução é complementada pelo dashboard web reativo **SENTINELA**, desenvolvido com React/TanStack Start. A arquitetura implementa o paradigma *edge-to-cloud* com cache das fontes externas e processamento contínuo da telemetria.
 
 ---
 
@@ -29,8 +29,8 @@ No contexto da disciplina de Internet das Coisas, o presente trabalho propõe um
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        ARQUITETURA SENTINELA                        │
 ├─────────────────┬───────────────────────────────────────────────────┤
-│  CAMADA FÍSICA  │  Sensores (simulados) por zona geográfica          │
-│                 │  Parâmetros: temperatura, umidade, fumaça          │
+│  CAMADA DADOS   │  Open-Meteo + NASA FIRMS por zona geográfica       │
+│                 │  Meteorologia real + índice estimado de fumaça     │
 ├─────────────────┼───────────────────────────────────────────────────┤
 │  CAMADA REDE    │  Broker MQTT (HiveMQ public / próprio)             │
 │                 │  Tópicos hierárquicos por zona e tipo              │
@@ -55,12 +55,12 @@ O namespace MQTT adota hierarquia em quatro níveis para possibilitar subscriç�
 
 | Direção      | Padrão de Tópico                                                     | Descrição                          |
 |--------------|----------------------------------------------------------------------|------------------------------------|
-| Sensor → GW  | `sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/sensor/temperatura`             | Leitura de temperatura (°C)        |
-| Sensor → GW  | `sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/sensor/umidade`                 | Umidade relativa (%)               |
-| Sensor → GW  | `sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/sensor/fumaca`                  | Concentração de fumaça (%)         |
-| GW → Atuador | `sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/atuador/alerta`                 | Comando de alerta e ação           |
+| Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/temperatura`             | Leitura de temperatura (°C)        |
+| Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/umidade`                 | Umidade relativa (%)               |
+| Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/fumaca`                  | Concentração de fumaça (%)         |
+| GW → Atuador | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/atuador/alerta`                 | Comando de alerta e ação           |
 
-O gateway subscreve o padrão `sentinela-iot-2026-joao-carol/chapada-veadeiros/+/sensor/+` (wildcard `+` = um nível), recebendo automaticamente todos os sensores de todas as zonas cadastradas.
+O gateway subscreve o padrão `sentinela-iot-2026-joao-carol/monitoramento-br/+/sensor/+` (wildcard `+` = um nível), recebendo automaticamente todos os sensores de todas as zonas cadastradas.
 
 ### 2.2 Diagrama de Sequência — Evento de Risco Crítico
 
@@ -84,23 +84,26 @@ Sensor          Broker MQTT        Gateway         NASA FIRMS       Atuador
 
 ## 3. Componentes do Sistema
 
-### 3.1 Sensor (`sensor.py`)
+### 3.1 Coletor de Telemetria (`sensor.py`)
 
-Simula dispositivos físicos distribuídos por quatro zonas geográficas. Cada zona mantém um estado persistente de temperatura, umidade e fumaça que evolui segundo passeio aleatório (*random walk*) com deriva periódica simulando eventos de ignição (probabilidade ~2% por ciclo).
+O coletor representa a camada de aquisição IoT de cinco zonas geográficas. Temperatura e umidade são obtidas da Open-Meteo para as coordenadas de cada zona. Os focos de calor e o FRP são consultados na NASA FIRMS e convertidos em um **índice qualitativo estimado de fumaça** para manter compatibilidade com o motor acadêmico de regras. Pequeno ruído gaussiano representa a incerteza que existiria em sensores físicos.
+
+> **Limitação científica:** a NASA FIRMS não mede “percentual de fumaça”. Ela detecta anomalias térmicas e fogo ativo. Portanto, o campo `fumaca` é um índice derivado/proxy, e não uma concentração atmosférica medida. Uma medição real de fumaça local exigiria hardware como MQ-2 ou um serviço de qualidade do ar com PM2.5.
 
 **Parâmetros publicados a cada 3 segundos por zona:**
 
-| Campo        | Unidade | Faixa normal | Faixa de evento |
-|--------------|---------|-------------|-----------------|
-| temperatura  | °C      | 20–35       | 35–52           |
-| umidade      | %       | 30–70       | 5–25            |
-| fumaca       | %       | 0–20        | 40–100          |
+| Campo        | Unidade | Origem | Atualização da fonte |
+|--------------|---------|--------|----------------------|
+| temperatura  | °C      | Open-Meteo | 10 minutos |
+| umidade      | %       | Open-Meteo | 10 minutos |
+| fumaca       | índice 0–100 | proxy derivado da NASA FIRMS | 30 minutos |
 
 **Formato de payload (JSON):**
 ```json
 {
   "valor": 72.3,
-  "timestamp": "2026-09-09T18:45:00.123456+00:00"
+  "timestamp": "2026-09-09T18:45:00.123456+00:00",
+  "fonte": "open-meteo"
 }
 ```
 
@@ -182,7 +185,7 @@ O dashboard opera por padrão em modo real: o módulo `iot.ts` estabelece uma co
 
 **Funcionalidades do dashboard:**
 - Visão geral de todas as zonas monitoradas com níveis de risco em tempo real
-- Painel de confirmação via satélite NASA FIRMS com animação de varredura
+- Mapa geográfico Leaflet interativo e expansível, com marcadores coloridos por risco e acesso ao mapa NASA FIRMS
 - Feed de eventos ao vivo (crítico, regra, satélite, telemetria, sistema, atuador)
 - Log de eventos estilo terminal
 - Botões de comando MQTT (acionar brigada, reforçar, silenciar) com feedback visual
@@ -278,11 +281,13 @@ O frontend possui configuração própria em `front/.env`. O navegador não util
 |----------------------|---------------------|------------------------------------------|
 | `MQTT_BROKER`        | broker.hivemq.com   | Endereço do broker MQTT                  |
 | `MQTT_PORT`          | 1883                | Porta TCP do broker                      |
-| `MQTT_TOPIC_BASE`    | sentinela-iot-2026-joao-carol/chapada-veadeiros | Namespace isolado do projeto |
+| `MQTT_TOPIC_BASE`    | sentinela-iot-2026-joao-carol/monitoramento-br | Namespace isolado do projeto |
 | `FIRMS_MAP_KEY`      | —                   | **Obrigatório**: chave de acesso NASA FIRMS |
 | `FIRMS_SOURCE`       | VIIRS_SNPP_NRT      | Fonte de dados orbital                   |
 | `FIRMS_DAYS`         | 1                   | Janela temporal de busca (dias)          |
 | `FIRMS_RAIO_GRAUS`   | 0.15                | Raio de busca em graus (~16 km)          |
+| `SENSOR_REFRESH_METEO_MIN` | 10             | Atualização Open-Meteo no coletor        |
+| `SENSOR_REFRESH_FIRMS_MIN` | 30             | Atualização FIRMS no coletor              |
 | `FIRMS_COOLDOWN_SEG` | 60                  | Cooldown entre consultas FIRMS por zona  |
 | `ALERTA_COOLDOWN_SEG`| 30                  | Intervalo mínimo entre alertas da mesma zona |
 | `ACAO_COOLDOWN_SEG`  | 30                  | Cooldown entre ações repetidas (atuador) |
@@ -291,16 +296,17 @@ O frontend possui configuração própria em `front/.env`. O navegador não util
 
 ## 6. Mapeamento de Zonas
 
-As zonas monitoradas correspondem a localidades brasileiras reais na região da **Chapada dos Veadeiros, em Goiás**, área do bioma Cerrado sujeita a incêndios durante a estação seca:
+As zonas monitoradas cobrem localidades de Goiás, Tocantins e uma localidade representativa da Amazônia paraense:
 
-| Zona                  | Lat          | Lon          | Sensor ID |
-|-----------------------|-------------|-------------|-----------|
-| Alto Paraíso de Goiás | -14.1330    | -47.5170    | GO-AP-01  |
-| Vila de São Jorge     | -14.1775    | -47.8140    | GO-SJ-02  |
-| Cavalcante            | -13.7975    | -47.4583    | GO-CV-03  |
-| Colinas do Sul        | -14.1528    | -48.0760    | GO-CS-04  |
+| Zona              | UF | Lat       | Lon       | Sensor ID |
+|-------------------|----|-----------|-----------|-----------|
+| Anápolis          | GO | -16.3267  | -48.9530  | GO-AN-01  |
+| Formosa           | GO | -15.5372  | -47.3372  | GO-FO-02  |
+| Pirenópolis       | GO | -15.8558  | -48.9597  | GO-PI-03  |
+| Sandolândia       | TO | -12.5408  | -49.9192  | TO-SA-04  |
+| Novo Progresso    | PA | -7.1261   | -55.3853  | PA-NP-05  |
 
-Para alterar as coordenadas, edite o dicionário `ZONA_COORDS` em `gateway.py`.
+Como “Amazônia” é uma região extensa, Novo Progresso (PA) foi adotada como ponto representativo. Para alterar as coordenadas, edite `ZONA_COORDS` em `sensor.py` e `gateway.py` e mantenha as definições do frontend sincronizadas.
 
 ---
 
@@ -355,7 +361,7 @@ Para alterar as coordenadas, edite o dicionário `ZONA_COORDS` em `gateway.py`.
 - **Machine Learning**: substituir o motor de regras estático por modelo de classificação treinado com dados históricos INPE/FIRMS.
 - **Hardware real**: migrar do sensor simulado para microcontroladores com sensores MQ-2 (fumaça), DHT22 (temperatura/umidade) via ESP32 com firmware MicroPython.
 - **Integração com Defesa Civil**: webhook para notificação automática de órgãos públicos em caso de risco crítico confirmado.
-- **Dashboard com MQTT real**: substituir o `sim.ts` por conexão WebSocket ao broker usando `mqtt.js`, consumindo dados reais do sensor e gateway.
+- **Sensor físico de fumaça**: substituir o proxy FIRMS por sensores locais MQ-2/PM2.5 para obter concentração atmosférica realmente medida.
 
 ---
 
@@ -363,7 +369,7 @@ Para alterar as coordenadas, edite o dicionário `ZONA_COORDS` em `gateway.py`.
 
 ```
 projeto-iot/
-├── sensor.py           # Gerador de dados de sensores (publica via MQTT)
+├── sensor.py           # Coleta Open-Meteo/FIRMS e publica via MQTT
 ├── gateway.py          # Motor de regras + integração NASA FIRMS + alertas
 ├── atuador.py          # Recebe comandos e executa ações de resposta
 ├── requirements.txt    # Dependências Python
@@ -378,10 +384,13 @@ projeto-iot/
     │   ├── components/
     │   │   └── dashboard/
     │   │       ├── ZoneCard.tsx    # Cartões de zona
-    │   │       ├── SidePanel.tsx   # Painel lateral (FIRMS, feed, comandos)
-    │   │       └── StatusDot.tsx   # Indicador de status animado
+    │   │       ├── SidePanel.tsx      # Painel lateral (mapa, feed, comandos)
+    │   │       ├── FireMap.tsx        # Wrapper client-only do mapa
+    │   │       ├── LeafletMapCore.tsx # Mapa Leaflet interativo
+    │   │       └── StatusDot.tsx      # Indicador de status animado
     │   └── lib/
-    │       └── sim.ts          # Simulação do fluxo IoT no frontend
+    │       ├── iot.ts              # MQTT WebSocket em tempo real
+    │       └── sim.ts              # Fallback de demonstração
     └── package.json
 ```
 
@@ -391,6 +400,7 @@ projeto-iot/
 
 - **MQTT Protocol Specification v3.1.1** — OASIS Standard, 2014. Disponível em: [https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/)
 - **NASA FIRMS — Fire Information for Resource Management System**. Disponível em: [https://firms.modaps.eosdis.nasa.gov/](https://firms.modaps.eosdis.nasa.gov/)
+- **Open-Meteo Weather API** — dados meteorológicos atuais por coordenada. Disponível em: [https://open-meteo.com/](https://open-meteo.com/)
 - **VIIRS 375m Active Fire Product**. Schroeder, W. et al. *Remote Sensing of Environment*, 2014.
 - **INPE — Programa Queimadas**. Instituto Nacional de Pesquisas Espaciais. Disponível em: [https://queimadas.dgi.inpe.br/](https://queimadas.dgi.inpe.br/)
 - **paho-mqtt** — Eclipse Foundation. Python Client for MQTT. Disponível em: [https://github.com/eclipse/paho.mqtt.python](https://github.com/eclipse/paho.mqtt.python)

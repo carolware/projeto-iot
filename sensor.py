@@ -224,7 +224,6 @@ def leitura_atual(zona: str) -> dict:
         "umidade":     round(max(5.0,  min(99.0, s["umidade"]  + random.gauss(0, 1.0))), 1),
         "fumaca":      round(max(0.0,  min(99.0, s["fumaca"]   + random.gauss(0, 0.8))), 1),
         "timestamp":   datetime.now(timezone.utc).isoformat(),
-        "fonte":       "real",  # marca que os dados são reais (não simulados)
     }
 
 
@@ -253,11 +252,11 @@ def publicar_leitura(client: mqtt.Client, leitura: dict) -> None:
     ts   = leitura["timestamp"]
 
     client.publish(f"{TOPIC_PREFIX}/{zona}/sensor/temperatura",
-                   json.dumps({"valor": leitura["temperatura"], "timestamp": ts, "fonte": leitura["fonte"]}))
+                   json.dumps({"valor": leitura["temperatura"], "timestamp": ts, "fonte": "open-meteo"}))
     client.publish(f"{TOPIC_PREFIX}/{zona}/sensor/umidade",
-                   json.dumps({"valor": leitura["umidade"],     "timestamp": ts, "fonte": leitura["fonte"]}))
+                   json.dumps({"valor": leitura["umidade"],     "timestamp": ts, "fonte": "open-meteo"}))
     client.publish(f"{TOPIC_PREFIX}/{zona}/sensor/fumaca",
-                   json.dumps({"valor": leitura["fumaca"],      "timestamp": ts, "fonte": leitura["fonte"]}))
+                   json.dumps({"valor": leitura["fumaca"],      "timestamp": ts, "fonte": "firms-proxy"}))
 
     print(
         f"[sensor] {zona:20s} "

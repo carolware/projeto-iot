@@ -30,6 +30,12 @@ function now() {
   return new Date().toLocaleTimeString("pt-BR", { hour12: false });
 }
 
+function createClientId() {
+  const randomPart = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `sentinela-front-${randomPart}`;
+}
+
 function evaluateRisk(smoke: number, humidity: number, temp: number): Risk {
   if (smoke >= 85 && humidity < 15) return "critico";
   if (smoke >= 60 && humidity < 25) return "alto";
@@ -171,7 +177,7 @@ function initializeMqtt() {
   import("mqtt")
     .then(({ default: mqttLib }) => {
       mqttClient = mqttLib.connect(MQTT_URL, {
-        clientId:       `sentinela-front-${crypto.randomUUID()}`,
+        clientId:       createClientId(),
         clean:          true,
         reconnectPeriod: 3000,
         connectTimeout:  10000,
