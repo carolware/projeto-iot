@@ -68,7 +68,9 @@ let mqttState: SimState = {
   zones: initZones(),
   feed: [],
   log: ["[ .. ] aguardando conexão MQTT"],
-  clock: now(),
+  // clock começa vazio para que o SSR e a hidratação do cliente
+  // produzam o mesmo HTML — o setInterval atualiza após a montagem
+  clock: "",
   lastReadSec: 0,
   uptimeSec: 0,
   commandsSent: 0,

@@ -118,7 +118,7 @@ let state: SimState = {
     "[ OK ] gateway → conectado",
     "[ .. ] firms → aguardando dados",
   ],
-  clock: now(),
+  clock: "",
   lastReadSec: 2,
   uptimeSec: 0,
   commandsSent: 1,
