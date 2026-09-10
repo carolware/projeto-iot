@@ -12,6 +12,7 @@
  * é hidratado e inicializado exclusivamente no cliente.
  */
 import { useState, useEffect, lazy, Suspense } from "react";
+import { createPortal } from "react-dom";
 import type { Zone } from "@/lib/iot";
 
 // Não importar nada de LeafletMapCore aqui (seria avaliado no servidor)
@@ -72,21 +73,18 @@ export function FireMap({ zones }: { zones: Zone[] }) {
   return (
     <>
       {/* ── Mapa pequeno (sidebar) ── */}
-      <div
-        className="relative w-full rounded border border-hair overflow-hidden aspect-[4/3] cursor-pointer group"
-        onClick={() => setExpanded(true)}
-        title="Clique para expandir"
-      >
+      <div className="relative w-full rounded border border-hair overflow-hidden aspect-[4/3]">
         <Suspense fallback={<MapPlaceholder />}>
-          <LeafletMapCore zones={zones} zoom={5} interactive={false} />
+          <LeafletMapCore zones={zones} zoom={5} interactive />
         </Suspense>
 
-        {/* Overlay hover */}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/35 transition-colors flex items-end justify-center pb-3 pointer-events-none">
-          <span className="opacity-0 group-hover:opacity-100 font-mono text-[9px] text-white bg-black/70 px-2 py-1 rounded border border-white/20 transition-opacity">
-            EXPANDIR MAPA
-          </span>
-        </div>
+        <button
+          type="button"
+          className="absolute bottom-2 left-2 z-[1000] font-mono text-[9px] bg-black/85 text-white px-2 py-1 rounded border border-white/30 hover:bg-teal hover:text-black transition-colors"
+          onClick={() => setExpanded(true)}
+        >
+          EXPANDIR
+        </button>
 
         {/* Botão NASA FIRMS */}
         <a
@@ -103,9 +101,9 @@ export function FireMap({ zones }: { zones: Zone[] }) {
       <RiskLegend />
 
       {/* ── Modal expandido (tela cheia) ── */}
-      {expanded && (
+      {expanded && createPortal(
         <div
-          className="fixed inset-0 z-50 bg-black/85 flex flex-col"
+          className="fixed inset-0 z-[9999] bg-black/90 flex flex-col"
           onClick={() => setExpanded(false)}
         >
           {/* Barra superior */}
@@ -151,7 +149,8 @@ export function FireMap({ zones }: { zones: Zone[] }) {
               <LeafletMapCore zones={zones} zoom={6} interactive />
             </Suspense>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
