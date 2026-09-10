@@ -1,4 +1,4 @@
-import { sendCommand, type FeedEvent, type SimState, type Zone } from "@/lib/sim";
+import { sendIotCommand, type FeedEvent, type SimState, type Zone } from "@/lib/iot";
 import { StatusDot } from "./StatusDot";
 
 function SatellitePanel({ zone }: { zone: Zone | undefined }) {
@@ -105,24 +105,24 @@ function MqttCommands({ zone }: { zone: Zone | undefined }) {
       <span className="font-mono text-[10px] tracking-[0.2em] text-faint">04 — COMANDOS MQTT</span>
       <div className="mt-3 rounded bg-ink/70 border border-hair px-2.5 py-2 font-mono text-[11px] break-all">
         <span className="text-teal">MQTT&gt;</span>{" "}
-        <span className="text-fg">incendio/{target}/alerta</span>{" "}
+        <span className="text-fg">minha-equipe/cidade-incendio/{target}/atuador/alerta</span>{" "}
         <span className="text-faint">{'{"risco":"critico","acao":"acionar_brigada"}'}</span>
       </div>
       <div className="mt-2 grid grid-cols-3 gap-2">
         <button
-          onClick={() => sendCommand(target, "acionar_brigada")}
+          onClick={() => sendIotCommand(target, "acionar_brigada")}
           className="rounded border border-ember/50 bg-ember/10 hover:bg-ember/20 py-2 font-mono text-[10px] text-ember transition-colors cursor-pointer"
         >
           ACIONAR
         </button>
         <button
-          onClick={() => sendCommand(target, "reforcar_monitoramento")}
+          onClick={() => sendIotCommand(target, "reforcar_monitoramento")}
           className="rounded border border-hair bg-surface-2 hover:bg-surface py-2 font-mono text-[10px] text-fg transition-colors cursor-pointer"
         >
           REFORÇAR
         </button>
         <button
-          onClick={() => sendCommand(target, "silenciar_alerta")}
+          onClick={() => sendIotCommand(target, "silenciar_alerta")}
           className="rounded border border-hair bg-surface-2 hover:bg-surface py-2 font-mono text-[10px] text-dim transition-colors cursor-pointer"
         >
           SILENCIAR

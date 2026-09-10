@@ -1,17 +1,21 @@
 import json
+import os
 import random
 import time
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
+from dotenv import load_dotenv
 
-BROKER = "broker.hivemq.com"   
-PORT = 1883
+load_dotenv()
+
+BROKER = os.getenv("MQTT_BROKER", "broker.hivemq.com")
+PORT = int(os.getenv("MQTT_PORT", "1883"))
 CLIENT_ID = "sensor-cidade-incendio"
 
-TOPIC_PREFIX = "minha-equipe/cidade-incendio"
+TOPIC_PREFIX = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/chapada-veadeiros")
 
-ZONAS = ["parque-central", "reserva-norte", "area-sul", "distrito-industrial"]
+ZONAS = ["alto-paraiso", "vila-sao-jorge", "cavalcante", "colinas-do-sul"]
 
 # estado inicial de cada zona
 estado = {

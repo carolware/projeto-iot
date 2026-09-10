@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useSim } from "@/lib/sim";
+import { useIot } from "@/lib/iot";
 import { StatusDot } from "@/components/dashboard/StatusDot";
 import { ZoneCard, ZoneHero } from "@/components/dashboard/ZoneCard";
 import { SidePanel } from "@/components/dashboard/SidePanel";
@@ -34,7 +34,7 @@ function fmtUptime(sec: number) {
 }
 
 function Index() {
-  const state = useSim();
+  const state = useIot();
   const { zones } = state;
 
   const alertZones = zones.filter((z) => z.risk === "alto" || z.risk === "critico");
@@ -61,9 +61,9 @@ function Index() {
           </div>
           <div className="ml-auto flex items-center gap-4 sm:gap-5 font-mono text-[11px]">
             <div className="flex items-center gap-1.5">
-              <StatusDot color="bg-ok" duration={2} />
+              <StatusDot color={state.mqttConnected ? "bg-ok" : "bg-danger"} duration={2} />
               <span className="text-fg">MQTT</span>
-              <span className="text-faint hidden sm:inline">conectado · 12ms</span>
+              <span className="text-faint hidden sm:inline">{state.mqttConnected ? `conectado · ${state.dataMode}` : "desconectado"}</span>
             </div>
             <div className="flex items-center gap-1.5">
               <StatusDot color="bg-ok" duration={2.4} />
@@ -133,7 +133,7 @@ function Index() {
 
       {/* FOOTER */}
       <footer className="border-t border-hair px-5 py-2.5 flex items-center justify-between font-mono text-[10px] text-faint">
-        <span>SENTINELA · protocolo iot · coleta simulada no front</span>
+        <span>SENTINELA · protocolo iot · dados {state.dataMode === "mqtt" ? "MQTT em tempo real" : "simulados no front"}</span>
         <span className="tabular-nums">
           broker 12ms · uptime {fmtUptime(state.uptimeSec)} · {zones.length} zonas · {critical} crítica
         </span>

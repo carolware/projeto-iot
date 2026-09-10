@@ -1,0 +1,231 @@
+import { useSyncExternalStore } from "react";
+import mqtt, { type MqttClient } from "mqtt";
+import { sendCommand as sendSimCommand, useSim, type FeedEvent, type Risk, type SimState, type Zone } from "./sim";
+
+export type { FeedEvent, Risk, SimState, Zone } from "./sim";
+
+const DATA_MODE = import.meta.env.VITE_DATA_MODE ?? "mqtt";
+const MQTT_URL = import.meta.env.VITE_MQTT_URL ?? "wss://broker.hivemq.com:8884/mqtt";
+const TOPIC_BASE = import.meta.env.VITE_MQTT_TOPIC_BASE ?? "sentinela-iot-2026-joao-carol/chapada-veadeiros";
+
+const ZONE_DEFS = [
+  { id: "alto-paraiso", name: "ALTO PARAÍSO", sensorId: "GO-AP-01", coords: "-14.133,-47.517" },
+  { id: "vila-sao-jorge", name: "VILA DE SÃO JORGE", sensorId: "GO-SJ-02", coords: "-14.1775,-47.814" },
+  { id: "cavalcante", name: "CAVALCANTE", sensorId: "GO-CV-03", coords: "-13.7975,-47.4583" },
+  { id: "colinas-do-sul", name: "COLINAS DO SUL", sensorId: "GO-CS-04", coords: "-14.1528,-48.076" },
+];
+
+function now() {
+  return new Date().toLocaleTimeString("pt-BR", { hour12: false });
+}
+
+function evaluateRisk(smoke: number, humidity: number, temp: number): Risk {
+  if (smoke >= 85 && humidity < 15) return "critico";
+  if (smoke >= 60 && humidity < 25) return "alto";
+  if (smoke >= 40 || humidity < 35 || temp > 33) return "medio";
+  return "baixo";
+}
+
+function initZones(): Zone[] {
+  return ZONE_DEFS.map((zone) => ({
+    ...zone,
+    topic: `${TOPIC_BASE}/${zone.id}/sensor/+`,
+    temp: 0,
+    humidity: 0,
+    smoke: 0,
+    prevTemp: 0,
+    prevHumidity: 0,
+    prevSmoke: 0,
+    online: false,
+    risk: "offline",
+    firmsConfirmed: false,
+    firmsConf: 0,
+    smokeHistory: Array(7).fill(0),
+    lastPingSec: 0,
+  }));
+}
+
+const startedAt = Date.now();
+let eventId = 0;
+let mqttClient: MqttClient | null = null;
+let initialized = false;
+const lastSeen = new Map<string, number>();
+const listeners = new Set<() => void>();
+
+let mqttState: SimState = {
+  zones: initZones(),
+  feed: [],
+  log: ["[ .. ] aguardando conexão MQTT"],
+  clock: now(),
+  lastReadSec: 0,
+  uptimeSec: 0,
+  commandsSent: 0,
+  mqttConnected: false,
+  dataMode: "mqtt",
+};
+
+function evt(kind: FeedEvent["kind"], title: string, detail: string): FeedEvent {
+  return { id: ++eventId, time: now(), kind, title, detail };
+}
+
+function emit() {
+  listeners.forEach((listener) => listener());
+}
+
+function addEvent(event: FeedEvent, logLine: string) {
+  mqttState = {
+    ...mqttState,
+    feed: [event, ...mqttState.feed].slice(0, 9),
+    log: [logLine, ...mqttState.log].slice(0, 6),
+  };
+}
+
+function updateTelemetry(zoneId: string, metric: string, value: number) {
+  lastSeen.set(zoneId, Date.now());
+  let changedZone: Zone | undefined;
+  const zones = mqttState.zones.map((zone) => {
+    if (zone.id !== zoneId) return zone;
+    const next = { ...zone, online: true, lastPingSec: 0 };
+    if (metric === "temperatura") {
+      next.prevTemp = next.temp;
+      next.temp = value;
+    } else if (metric === "umidade") {
+      next.prevHumidity = next.humidity;
+      next.humidity = value;
+    } else if (metric === "fumaca") {
+      next.prevSmoke = next.smoke;
+      next.smoke = value;
+      next.smokeHistory = [...next.smokeHistory.slice(1), value];
+    }
+    next.risk = evaluateRisk(next.smoke, next.humidity, next.temp);
+    changedZone = next;
+    return next;
+  });
+  mqttState = { ...mqttState, zones, lastReadSec: 0 };
+  if (metric === "fumaca" && changedZone) {
+    addEvent(
+      evt("telemetria", "TELEMETRIA recebida", `${TOPIC_BASE}/${zoneId}/sensor/+ {t:${changedZone.temp},h:${changedZone.humidity},f:${changedZone.smoke}}`),
+      `[ OK ] ${zoneId} → risco=${changedZone.risk}`,
+    );
+  }
+  emit();
+}
+
+function updateAlert(zoneId: string, payload: Record<string, unknown>) {
+  const risk = String(payload.risco ?? "alto") as Risk;
+  const confirmed = payload.firms_confirmado === true;
+  const zones = mqttState.zones.map((zone) =>
+    zone.id === zoneId
+      ? { ...zone, risk, firmsConfirmed: confirmed, firmsConf: confirmed ? 1 : 0 }
+      : zone,
+  );
+  const kind: FeedEvent["kind"] = risk === "critico" ? "critico" : "regra";
+  mqttState = { ...mqttState, zones };
+  addEvent(
+    evt(kind, risk === "critico" ? "ALERTA CRÍTICO" : "REGRA · risco alto", `${TOPIC_BASE}/${zoneId}/atuador/alerta · FIRMS=${confirmed ? "confirmado" : "não confirmado"}`),
+    confirmed ? `[ SAT] firms → foco ${zoneId}` : `[ ! ] ${zoneId} → risco=${risk}`,
+  );
+  emit();
+}
+
+function handleMessage(topic: string, raw: Uint8Array) {
+  const parts = topic.split("/");
+  if (parts.length < 5 || !topic.startsWith(`${TOPIC_BASE}/`)) return;
+  const zoneId = parts.at(-3)!;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>;
+    if (parts.at(-2) === "sensor") {
+      const value = Number(payload.valor);
+      if (Number.isFinite(value)) updateTelemetry(zoneId, parts.at(-1)!, value);
+    } else if (parts.at(-2) === "atuador" && parts.at(-1) === "alerta") {
+      updateAlert(zoneId, payload);
+    }
+  } catch {
+    addEvent(evt("sistema", "MQTT · payload inválido", topic), `[ ! ] payload inválido → ${topic}`);
+    emit();
+  }
+}
+
+function initializeMqtt() {
+  if (initialized || typeof window === "undefined" || DATA_MODE !== "mqtt") return;
+  initialized = true;
+  mqttClient = mqtt.connect(MQTT_URL, {
+    clientId: `sentinela-front-${crypto.randomUUID()}`,
+    clean: true,
+    reconnectPeriod: 3000,
+    connectTimeout: 10000,
+  });
+  mqttClient.on("connect", () => {
+    mqttClient?.subscribe([`${TOPIC_BASE}/+/sensor/+`, `${TOPIC_BASE}/+/atuador/alerta`], { qos: 0 });
+    mqttState = { ...mqttState, mqttConnected: true };
+    addEvent(evt("sistema", "MQTT · conectado", MQTT_URL), "[ OK ] dashboard → broker conectado");
+    emit();
+  });
+  mqttClient.on("message", handleMessage);
+  mqttClient.on("reconnect", () => {
+    mqttState = { ...mqttState, mqttConnected: false };
+    emit();
+  });
+  mqttClient.on("close", () => {
+    mqttState = { ...mqttState, mqttConnected: false };
+    emit();
+  });
+  mqttClient.on("error", (error) => {
+    addEvent(evt("sistema", "MQTT · erro", error.message), `[ ! ] mqtt → ${error.message}`);
+    emit();
+  });
+  window.setInterval(() => {
+    const current = Date.now();
+    const zones = mqttState.zones.map((zone) => {
+      const seen = lastSeen.get(zone.id);
+      if (!seen) return zone;
+      const lastPingSec = Math.floor((current - seen) / 1000);
+      return { ...zone, lastPingSec, online: lastPingSec < 15, risk: lastPingSec < 15 ? zone.risk : "offline" as Risk };
+    });
+    mqttState = {
+      ...mqttState,
+      zones,
+      clock: now(),
+      lastReadSec: Math.min(999, mqttState.lastReadSec + 1),
+      uptimeSec: Math.floor((current - startedAt) / 1000),
+    };
+    emit();
+  }, 1000);
+}
+
+function useMqtt(): SimState {
+  return useSyncExternalStore(
+    (callback) => {
+      listeners.add(callback);
+      initializeMqtt();
+      return () => listeners.delete(callback);
+    },
+    () => mqttState,
+    () => mqttState,
+  );
+}
+
+export function useIot(): SimState {
+  const simulated = useSim();
+  const real = useMqtt();
+  return DATA_MODE === "sim" ? { ...simulated, mqttConnected: true, dataMode: "sim" } : real;
+}
+
+export function sendIotCommand(zoneId: string, action: string) {
+  if (DATA_MODE === "sim") {
+    sendSimCommand(zoneId, action);
+    return;
+  }
+  const topic = `${TOPIC_BASE}/${zoneId}/atuador/alerta`;
+  const payload = JSON.stringify({
+    zona: zoneId,
+    risco: "alto",
+    acao: action,
+    origem: "dashboard",
+    timestamp: new Date().toISOString(),
+  });
+  mqttClient?.publish(topic, payload, { qos: 1 });
+  mqttState = { ...mqttState, commandsSent: mqttState.commandsSent + 1 };
+  addEvent(evt("atuador", `COMANDO · ${action.toUpperCase()}`, `${topic} ${payload}`), `[ TX ] ${zoneId} → ${action}`);
+  emit();
+}

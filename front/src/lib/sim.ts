@@ -48,6 +48,8 @@ export interface SimState {
   lastReadSec: number;
   uptimeSec: number;
   commandsSent: number;
+  mqttConnected: boolean;
+  dataMode: "mqtt" | "sim";
 }
 
 const ZONE_DEFS = [
@@ -123,6 +125,8 @@ let state: SimState = {
   lastReadSec: 2,
   uptimeSec: 0,
   commandsSent: 1,
+  mqttConnected: true,
+  dataMode: "sim",
 };
 
 const listeners = new Set<() => void>();
