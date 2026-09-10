@@ -1,52 +1,24 @@
 import { sendIotCommand, type FeedEvent, type SimState, type Zone } from "@/lib/iot";
 import { StatusDot } from "./StatusDot";
+import { FireMap } from "./FireMap";
 
-function SatellitePanel({ zone }: { zone: Zone | undefined }) {
-  const confirmed = zone?.firmsConfirmed ?? false;
+function MapPanel({ zones, hotZone }: { zones: Zone[]; hotZone: Zone | undefined }) {
   return (
     <section
       className="rounded-md border border-hair bg-surface p-3.5"
       style={{ animation: "enter .5s cubic-bezier(0.32,0.72,0,1) both", animationDelay: "200ms" }}
     >
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] tracking-[0.2em] text-faint">02 — CONFIRMAÇÃO SATÉLITE</span>
-        <span className="font-mono text-[9px] text-teal">NASA FIRMS</span>
+      <div className="flex items-center justify-between mb-3">
+        <span className="font-mono text-[10px] tracking-[0.2em] text-faint">02 — MAPA DE RISCO</span>
+        <span className="font-mono text-[9px] text-teal">OSM + NASA FIRMS</span>
       </div>
-      <div className="mt-3 rounded border border-hair bg-ink/70 aspect-[4/3] grid place-items-center relative overflow-hidden">
-        <svg viewBox="0 0 200 150" className="absolute inset-0 w-full h-full" preserveAspectRatio="none" fill="none">
-          <g stroke="var(--color-hair)" strokeWidth="1">
-            <line x1="0" y1="37" x2="200" y2="37" />
-            <line x1="0" y1="75" x2="200" y2="75" />
-            <line x1="0" y1="112" x2="200" y2="112" />
-            <line x1="50" y1="0" x2="50" y2="150" />
-            <line x1="100" y1="0" x2="100" y2="150" />
-            <line x1="150" y1="0" x2="150" y2="150" />
-          </g>
-          <circle cx="100" cy="75" r="46" stroke="var(--color-teal)" strokeOpacity="0.25" strokeWidth="1" strokeDasharray="3 5" style={{ animation: "sweep 6s linear infinite" }} />
-          <circle cx="100" cy="75" r="24" stroke="var(--color-teal)" strokeOpacity="0.35" strokeWidth="1" strokeDasharray="3 5" style={{ animation: "sweep 4s linear infinite reverse" }} />
-          <circle cx="100" cy="75" r="2" fill="var(--color-teal)" />
-        </svg>
-        <div className="relative z-10 flex flex-col items-center">
-          {confirmed ? (
-            <>
-              <span className="size-3 rounded-full bg-danger" style={{ animation: "softpulse 1.2s ease-in-out infinite" }} />
-              <span className="mt-2 font-mono text-[10px] text-fg tracking-wide">FOCO CONFIRMADO</span>
-              <span className="font-mono text-[9px] text-faint">
-                {zone?.coords} · conf {zone?.firmsConf}
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="size-3 rounded-full bg-teal/60" style={{ animation: "softpulse 2s ease-in-out infinite" }} />
-              <span className="mt-2 font-mono text-[10px] text-fg tracking-wide">VARREDURA ATIVA</span>
-              <span className="font-mono text-[9px] text-faint">sem foco confirmado na área</span>
-            </>
-          )}
+      <FireMap zones={zones} />
+      {hotZone?.firmsConfirmed && (
+        <div className="mt-2 font-mono text-[9px] text-danger flex items-center gap-1.5">
+          <span className="size-1.5 rounded-full bg-danger inline-block" style={{ animation: "softpulse 1.2s ease-in-out infinite" }} />
+          FIRMS: {hotZone.name} — foco satelital confirmado
         </div>
-      </div>
-      <div className="mt-2 font-mono text-[9px] text-faint leading-relaxed">
-        {confirmed ? "3 focos na área · FRP 2140 W" : "0 focos na área"} · atualizado {new Date().toLocaleTimeString("pt-BR", { hour12: false, hour: "2-digit", minute: "2-digit" })}
-      </div>
+      )}
     </section>
   );
 }
@@ -168,7 +140,7 @@ export function SidePanel({ state }: { state: SimState }) {
   const hottest = state.zones.find((z) => z.risk === "critico") ?? state.zones.find((z) => z.risk === "alto");
   return (
     <aside className="lg:sticky lg:top-[57px] flex flex-col gap-4">
-      <SatellitePanel zone={hottest} />
+      <MapPanel zones={state.zones} hotZone={hottest} />
       <AlertsFeed feed={state.feed} />
       <MqttCommands zone={hottest} />
       <EventLog log={state.log} />

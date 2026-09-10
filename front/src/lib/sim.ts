@@ -53,10 +53,11 @@ export interface SimState {
 }
 
 const ZONE_DEFS = [
-  { id: "alto-paraiso", name: "ALTO PARAÍSO", sensorId: "GO-AP-01", coords: "-14.133,-47.517", temp: 40, humidity: 14, smoke: 88 },
-  { id: "vila-sao-jorge", name: "VILA DE SÃO JORGE", sensorId: "GO-SJ-02", coords: "-14.1775,-47.814", temp: 33, humidity: 19, smoke: 70 },
-  { id: "cavalcante", name: "CAVALCANTE", sensorId: "GO-CV-03", coords: "-13.7975,-47.4583", temp: 32, humidity: 21, smoke: 65 },
-  { id: "colinas-do-sul", name: "COLINAS DO SUL", sensorId: "GO-CS-04", coords: "-14.1528,-48.076", temp: 28, humidity: 35, smoke: 46 },
+  { id: "anapolis",       name: "ANÁPOLIS",      sensorId: "GO-AN-01", coords: "-16.3267,-48.9530", temp: 34, humidity: 40, smoke: 8  },
+  { id: "formosa",        name: "FORMOSA",        sensorId: "GO-FO-02", coords: "-15.5372,-47.3372", temp: 33, humidity: 42, smoke: 6  },
+  { id: "pirinopolis",    name: "PIRENÓPOLIS",    sensorId: "GO-PI-03", coords: "-15.8558,-48.9597", temp: 35, humidity: 37, smoke: 10 },
+  { id: "sandolandia",    name: "SANDOLÂNDIA",    sensorId: "TO-SA-04", coords: "-12.5408,-49.9192", temp: 38, humidity: 22, smoke: 15 },
+  { id: "novo-progresso", name: "NOVO PROGRESSO", sensorId: "PA-NP-05", coords: "-7.1261,-55.3853",  temp: 37, humidity: 28, smoke: 18 },
 ];
 
 function evaluateRisk(smoke: number, humidity: number, temp: number): Risk {
@@ -84,7 +85,7 @@ const startedAt = Date.now();
 
 function initZones(): Zone[] {
   return ZONE_DEFS.map((z, i) => {
-    const online = z.id !== "riacho-noroeste";
+    const online = true;
     const risk = online ? evaluateRisk(z.smoke, z.humidity, z.temp) : "offline";
     return {
       ...z,
@@ -107,17 +108,15 @@ function initZones(): Zone[] {
 let state: SimState = {
   zones: initZones(),
   feed: [
-    evt("critico", "ALERTA CRÍTICO", "incendio/serra-leste/alerta · risco=critico"),
-    evt("regra", "REGRA · risco alto", "incendio/zona-norte/alerta · fumaca=71 umid=18"),
-    evt("satelite", "SATÉLITE · foco", "firms/confirm · conf=0.94 dist=1.2km"),
-    evt("telemetria", "TELEMETRIA ok", "incendio/mata-central/telemetria"),
-    evt("sistema", "GATEWAY · boot", "broker=tcp://192.168.0.10:1883"),
+    evt("regra",      "REGRA · risco médio",  "sandolandia/sensor · fumaca=15 umid=22"),
+    evt("satelite",   "SATÉLITE · varredura",  "firms/scan · nenhum foco confirmado"),
+    evt("telemetria", "TELEMETRIA ok",          "novo-progresso/sensor {t:37,h:28,f:18}"),
+    evt("sistema",    "GATEWAY · boot",         "broker=broker.hivemq.com:1883"),
   ],
   log: [
-    "[ OK ] serra-leste → risco=critico",
-    "[ ! ] zona-norte → risco=alto",
-    "[ SAT] firms → 3 focos",
-    "[ .. ] riacho-nw → sem resposta",
+    "[ .. ] sandolandia → risco=medio",
+    "[ OK ] gateway → conectado",
+    "[ .. ] firms → aguardando dados",
   ],
   clock: now(),
   lastReadSec: 2,

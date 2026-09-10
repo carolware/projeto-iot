@@ -4,7 +4,7 @@ atuador.py — Atuador IoT: recebe comandos do gateway e executa ações de resp
 Fluxo:
   gateway → MQTT (topico atuador) → atuador → executa ação (log, sirene, brigada)
 
-Tópicos subscritos:  sentinela-iot-2026-joao-carol/chapada-veadeiros/+/atuador/alerta
+Tópicos subscritos:  sentinela-iot-2026-joao-carol/monitoramento-br/+/atuador/alerta
 
 O atuador é o último elo da cadeia IoT: ao receber um pacote de alerta ele
 decide qual ação executar com base no nível de risco e em se o satélite NASA
@@ -29,7 +29,7 @@ load_dotenv()
 BROKER    = os.getenv("MQTT_BROKER", "broker.hivemq.com")
 PORT      = int(os.getenv("MQTT_PORT", "1883"))
 CLIENT_ID = "atuador-incendio-florestal"
-TOPIC_BASE   = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/chapada-veadeiros")
+TOPIC_BASE   = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
 SUB_PATTERN  = f"{TOPIC_BASE}/+/atuador/alerta"   # escuta todos os alertas
 
 # Mínimo de segundos entre ações repetidas para a mesma zona (evitar spam)
@@ -123,7 +123,7 @@ def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
 
 def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
     """
-    Decodifica o tópico  sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/atuador/alerta
+    Decodifica o tópico  sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/atuador/alerta
     e executa a ação correspondente ao campo 'acao' do payload JSON.
     """
     parts = msg.topic.split("/")

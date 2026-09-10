@@ -5,8 +5,8 @@ Fluxo:
   sensor → MQTT (topico sensor) → gateway → avalia risco → consulta FIRMS
                                            → publica alerta (topico atuador)
 
-Tópicos subscritos :  sentinela-iot-2026-joao-carol/chapada-veadeiros/+/sensor/+
-Tópicos publicados :  sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/atuador/alerta
+Tópicos subscritos :  sentinela-iot-2026-joao-carol/monitoramento-br/+/sensor/+
+Tópicos publicados :  sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/atuador/alerta
 """
 
 import json
@@ -30,7 +30,7 @@ load_dotenv()
 BROKER      = os.getenv("MQTT_BROKER", "broker.hivemq.com")
 PORT        = int(os.getenv("MQTT_PORT", "1883"))
 CLIENT_ID   = "gateway-incendio-florestal"
-TOPIC_BASE  = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/chapada-veadeiros")
+TOPIC_BASE  = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
 SUB_PATTERN = f"{TOPIC_BASE}/+/sensor/+"   # escuta todos os sensores
 FIRMS_KEY   = os.getenv("FIRMS_MAP_KEY", "")
 FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")  # ou MODIS_NRT
@@ -47,10 +47,11 @@ ALERTA_COOLDOWN_SEG = int(os.getenv("ALERTA_COOLDOWN_SEG", "30"))
 # ──────────────────────────────────────────────
 
 ZONA_COORDS: dict[str, tuple[float, float]] = {
-    "alto-paraiso":   (-14.1330, -47.5170),
-    "vila-sao-jorge": (-14.1775, -47.8140),
-    "cavalcante":     (-13.7975, -47.4583),
-    "colinas-do-sul": (-14.1528, -48.0760),
+    "anapolis":       (-16.3267, -48.9530),  # Anápolis, GO
+    "formosa":        (-15.5372, -47.3372),  # Formosa, GO
+    "pirinopolis":    (-15.8558, -48.9597),  # Pirenópolis, GO
+    "sandolandia":    (-12.5408, -49.9192),  # Sandolândia, TO
+    "novo-progresso": ( -7.1261, -55.3853),  # Novo Progresso, PA (Amazônia)
 }
 
 # ──────────────────────────────────────────────
@@ -321,7 +322,7 @@ def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
 
 def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
     """
-    Decodifica o tópico  sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/sensor/{tipo}
+    Decodifica o tópico  sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/{tipo}
     e atualiza o estado da zona correspondente.
     """
     parts = msg.topic.split("/")
