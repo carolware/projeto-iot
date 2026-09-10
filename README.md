@@ -291,6 +291,22 @@ python gateway.py
 python sensor.py
 ```
 
+### 5.3.1 Alternativa: Docker Compose
+
+Com `.env` preenchido (passo 5.2), sobe os 4 serviços (`atuador`, `gateway`,
+`sensor`, `front`) de uma vez, sem precisar de venv/Node instalados na máquina:
+
+```bash
+docker compose up -d --build
+docker compose logs -f          # acompanhar os 4 serviços
+docker compose down             # parar tudo
+```
+
+O front fica em `http://localhost:3000` (build de produção, não o dev server
+do Vite). As variáveis `VITE_*` de `front/.env` são compiladas no build da
+imagem — se você editar `front/.env`, recrie a imagem do front
+(`docker compose up -d --build front`) para o novo valor entrar em vigor.
+
 ### 5.4 Frontend (Desenvolvimento Local)
 
 ```bash
@@ -318,6 +334,92 @@ O frontend possui configuração própria em `front/.env`. O navegador não util
 | `FIRMS_COOLDOWN_SEG` | 600                 | Cooldown entre varreduras FIRMS por zona |
 | `ALERTA_COOLDOWN_SEG`| 30                  | Intervalo mínimo entre alertas da mesma zona |
 | `ACAO_COOLDOWN_SEG`  | 30                  | Cooldown entre ações repetidas (atuador) |
+| `MOCK_ZONA_INCENDIO` | — (vazio)           | Zona que ignora Open-Meteo/FIRMS e publica valores fixos de incêndio (ver 5.6) |
+| `MOCK_TEMPERATURA`   | 42.0                | Temperatura (°C) usada pela zona mockada |
+| `MOCK_UMIDADE`       | 10.0                | Umidade (%) usada pela zona mockada      |
+| `MOCK_FUMACA`        | 93.0                | Índice de fumaça (%) usado pela zona mockada |
+| `MOCK_LAT` / `MOCK_LON` | — (vazio)        | Coordenada opcional que reposiciona o marcador da zona mockada (ver 5.6) |
+
+### 5.6 Simulação de Incêndio (Mock)
+
+O `sensor.py` permite forçar uma zona específica a publicar valores fixos de
+incêndio crítico (fumaça alta, umidade baixa, temperatura alta), ignorando
+Open-Meteo/FIRMS só para ela — as demais zonas continuam com dados reais.
+Útil para demonstrar o fluxo completo (sensor → gateway → alerta → atuador)
+sem depender de um incêndio real acontecendo agora.
+
+Zonas disponíveis: `anapolis`, `formosa`, `pirinopolis`, `jaragua`,
+`sandolandia`, `novo-progresso`, `mirador`, `mateiros`, `lagoa-da-confusao`.
+
+**Opção A — no boot, via `.env`** (fixo até reiniciar o processo/container):
+
+```bash
+# No .env da raiz
+MOCK_ZONA_INCENDIO=mateiros
+MOCK_TEMPERATURA=42.0
+MOCK_UMIDADE=10.0
+MOCK_FUMACA=93.0
+```
+
+```bash
+# Local
+python sensor.py
+
+# Docker — precisa recriar o container do sensor pra ler o .env atualizado
+docker compose up -d --force-recreate sensor
+```
+
+**Opção B — em tempo real, via `mock_incendio.py`** (não precisa reiniciar
+nada; funciona com o sensor local ou dentro do Docker). O script publica no
+mesmo tópico de comando que o `sensor.py` assina (`{MQTT_TOPIC_BASE}/comando/mock`):
+
+```bash
+# Ligar o mock em mateiros com os defaults do .env
+python mock_incendio.py on mateiros
+
+# Ligar com valores customizados (todos opcionais)
+python mock_incendio.py on mateiros --temperatura 45 --umidade 5 --fumaca 98
+
+# Ligar reposicionando o marcador no mapa (--lat/--lon juntos)
+python mock_incendio.py on mateiros --lat -10.55 --lon -46.30
+
+# Desligar (a zona volta a buscar dados reais e a coordenada real, ~3s)
+python mock_incendio.py off
+```
+
+Sem instalar nada além do `requirements.txt` — é o mesmo `paho-mqtt` que o
+resto do projeto já usa. Se preferir publicar manualmente (sem o script),
+o payload é `{"ativo": true, "zona": "<zona>", "temperatura": ..., "umidade": ..., "fumaca": ..., "lat": ..., "lon": ...}`
+para ligar ou `{"ativo": false}` para desligar, publicado no tópico acima —
+via [Mosquitto CLI](https://mosquitto.org/) (`mosquitto_pub -h broker.hivemq.com -p 1883 -t '<tópico>' -m '<payload>'`),
+Python (`paho.mqtt.publish.single(...)`) ou qualquer outro client MQTT.
+
+`lat`/`lon` são opcionais e devem ser enviados juntos. Quando presentes, o
+`sensor.py` republica a coordenada nos tópicos `.../sensor/lat` e `.../sensor/lon`
+(o front já assina `.../sensor/+`, então o marcador da zona se move no mapa sem
+recarregar a página), e o `gateway.py` — que também assina o tópico de comando —
+passa a consultar o FIRMS nessa coordenada em vez da real, enquanto o mock
+estiver ativo. Ao desligar, ambos voltam automaticamente para a coordenada
+real de `ZONA_COORDS`.
+
+A coordenada customizada precisa cair dentro do raio de busca FIRMS da zona
+(`FIRMS_RAIO_GRAUS`, o mesmo raio do círculo tracejado no mapa) — fora disso,
+`mock_incendio.py` já recusa localmente antes de publicar; se alguém publicar
+direto no MQTT sem passar pelo CLI, o `sensor.py` e o `gateway.py` também
+validam e ignoram a coordenada (mantendo a posição real), sem deixar de
+aplicar os demais valores mockados (temperatura/umidade/fumaça).
+
+Com `lat`/`lon` definidos, o `gateway.py` também **fabrica uma confirmação de
+satélite** na coordenada exata do mock (em vez de consultar a API real da
+NASA, que não teria foco nenhum ali) — assim o pin de "foco FIRMS" aparece no
+mapa (`FirmsMarkers` em `LeafletMapCore.tsx`), com popup de FRP/satélite/confiança,
+igual apareceria com uma detecção real. Isso só acontece na próxima varredura
+FIRMS da zona, respeitando o cooldown normal (`FIRMS_COOLDOWN_SEG`, padrão 600s
+— pode levar até esse tempo pra aparecer).
+
+No terminal do `sensor.py` (ou `docker compose logs -f sensor`), a zona mockada
+aparece marcada com `[MOCK INCÊNDIO]`; no MQTT, o payload publicado traz
+`"fonte": "mock"` em vez de `"open-meteo"`/`"firms-proxy"`.
 
 ---
 
@@ -382,12 +484,17 @@ projeto-iot/
 ├── sensor.py           # Coleta Open-Meteo/FIRMS e publica via MQTT
 ├── gateway.py          # Motor de regras + integração NASA FIRMS + alertas
 ├── atuador.py          # Recebe comandos e executa ações de resposta
+├── mock_incendio.py    # CLI para ligar/desligar o mock de incêndio em tempo real (ver 5.6)
 ├── requirements.txt    # Dependências Python
+├── Dockerfile          # Imagem Python compartilhada (sensor/gateway/atuador)
+├── docker-compose.yml  # Orquestra os 4 serviços (backend + front)
+├── .dockerignore
 ├── .env.example        # Template de variáveis de ambiente
 ├── .env                # Configuração local (não versionado)
 ├── .gitignore
 ├── README.md           # Este documento
 └── front/              # Dashboard SENTINELA (React/TanStack/Vite)
+    ├── Dockerfile          # Build multi-stage (Nitro/node-server) + runtime
     ├── src/
     │   ├── routes/
     │   │   └── index.tsx       # Página principal do dashboard

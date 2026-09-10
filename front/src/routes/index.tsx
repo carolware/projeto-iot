@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useIot } from "@/lib/iot";
+import { useClock, useIot, type Zone } from "@/lib/iot";
 import { StatusDot } from "@/components/dashboard/StatusDot";
 import { ZoneCard, ZoneHero } from "@/components/dashboard/ZoneCard";
 import { SidePanel } from "@/components/dashboard/SidePanel";
+import { ZoneModal } from "@/components/dashboard/ZoneModal";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -33,9 +35,21 @@ function fmtUptime(sec: number) {
   return `${h}:${m}:${s}`;
 }
 
+/** Isolados do resto da página: só esses dois nós re-renderizam a cada 1s. */
+function Clock() {
+  const { clock } = useClock();
+  return <div className="hidden md:block pl-4 border-l border-hair text-faint tabular-nums">{clock}</div>;
+}
+
+function Uptime() {
+  const { uptimeSec } = useClock();
+  return <span className="tabular-nums">{fmtUptime(uptimeSec)}</span>;
+}
+
 function Index() {
   const state = useIot();
   const { zones } = state;
+  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
 
   const alertZones = zones.filter((z) => z.risk === "alto" || z.risk === "critico");
   const critical = zones.filter((z) => z.risk === "critico").length;
@@ -44,9 +58,10 @@ function Index() {
 
   const hero = zones.find((z) => z.risk === "critico") ?? zones.find((z) => z.risk === "alto");
   const rest = zones.filter((z) => z !== hero);
+  const selectedZone: Zone | undefined = selectedZoneId ? zones.find((z) => z.id === selectedZoneId) : undefined;
 
   return (
-    <div className="min-h-screen bg-ink text-fg font-body text-sm antialiased">
+    <div className="min-h-screen flex flex-col bg-ink text-fg font-body text-sm antialiased">
       {/* SYSTEM BAR */}
       <header className="sticky top-0 z-10 border-b border-hair bg-ink/95 backdrop-blur-sm">
         <div className="flex items-center gap-6 px-5 py-2.5">
@@ -75,7 +90,7 @@ function Index() {
               <span className="text-fg">NASA FIRMS</span>
               <span className="text-faint hidden sm:inline">sincronizando</span>
             </div>
-            <div className="hidden md:block pl-4 border-l border-hair text-faint tabular-nums">{state.clock}</div>
+            <Clock />
           </div>
         </div>
       </header>
@@ -119,12 +134,12 @@ function Index() {
       </section>
 
       {/* GRID */}
-      <main className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-4 px-5 py-4">
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-4 px-5 py-4">
         <section>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-            {hero && <ZoneHero zone={hero} index={0} />}
+            {hero && <ZoneHero zone={hero} index={0} onSelect={(z) => setSelectedZoneId(z.id)} />}
             {rest.map((z, i) => (
-              <ZoneCard key={z.id} zone={z} index={i + 1} />
+              <ZoneCard key={z.id} zone={z} index={i + 1} onSelect={(zz) => setSelectedZoneId(zz.id)} />
             ))}
           </div>
         </section>
@@ -135,9 +150,13 @@ function Index() {
       <footer className="border-t border-hair px-5 py-2.5 flex items-center justify-between font-mono text-[10px] text-faint">
         <span>SENTINELA · protocolo iot · dados {state.dataMode === "mqtt" ? "MQTT em tempo real" : "simulados no front"}</span>
         <span className="tabular-nums">
-          broker 12ms · uptime {fmtUptime(state.uptimeSec)} · {zones.length} zonas · {critical} crítica
+          broker 12ms · uptime <Uptime /> · {zones.length} zonas · {critical} crítica
         </span>
       </footer>
+
+      {selectedZone && (
+        <ZoneModal zone={selectedZone} state={state} onClose={() => setSelectedZoneId(null)} />
+      )}
     </div>
   );
 }

@@ -9,25 +9,81 @@
  *   "sim"           → usa simulação local (sem rede)
  */
 import { useSyncExternalStore } from "react";
-import type { MqttClient } from "mqtt";   // import de tipo: apagado no build, seguro no SSR
-import { sendCommand as sendSimCommand, useSim, type FeedEvent, type FirmsHotspot, type Risk, type SimState, type Zone } from "./sim";
+import type { MqttClient } from "mqtt"; // import de tipo: apagado no build, seguro no SSR
+import {
+  sendCommand as sendSimCommand,
+  useSim,
+  type FeedEvent,
+  type FirmsHotspot,
+  type Risk,
+  type SimState,
+  type Zone,
+} from "./sim";
 
 export type { FeedEvent, FirmsHotspot, Risk, SimState, Zone } from "./sim";
 
 const DATA_MODE = import.meta.env.VITE_DATA_MODE ?? "mqtt";
-const MQTT_URL  = import.meta.env.VITE_MQTT_URL  ?? "wss://broker.hivemq.com:8884/mqtt";
-const TOPIC_BASE = import.meta.env.VITE_MQTT_TOPIC_BASE ?? "sentinela-iot-2026-joao-carol/monitoramento-br";
+const MQTT_URL =
+  import.meta.env.VITE_MQTT_URL ?? "wss://broker.hivemq.com:8884/mqtt";
+const TOPIC_BASE =
+  import.meta.env.VITE_MQTT_TOPIC_BASE ??
+  "sentinela-iot-2026-joao-carol/monitoramento-br";
 
 const ZONE_DEFS = [
-  { id: "anapolis",          name: "ANÁPOLIS",          sensorId: "GO-AN-01", coords: "-16.3267,-48.9530" },
-  { id: "formosa",           name: "FORMOSA",            sensorId: "GO-FO-02", coords: "-15.5372,-47.3372" },
-  { id: "pirinopolis",       name: "PIRENÓPOLIS",        sensorId: "GO-PI-03", coords: "-15.8558,-48.9597" },
-  { id: "jaragua",           name: "JARAGUÁ",            sensorId: "GO-JA-04", coords: "-15.7529,-49.3344" },
-  { id: "sandolandia",       name: "SANDOLÂNDIA",        sensorId: "TO-SA-05", coords: "-12.5408,-49.9192" },
-  { id: "novo-progresso",    name: "NOVO PROGRESSO",     sensorId: "PA-NP-06", coords: "-7.1261,-55.3853"  },
-  { id: "mirador",           name: "MIRADOR",            sensorId: "MA-MI-07", coords: "-6.3745,-44.3683"  },
-  { id: "mateiros",          name: "MATEIROS",           sensorId: "TO-MA-08", coords: "-10.5464,-46.4168" },
-  { id: "lagoa-da-confusao", name: "LAGOA DA CONFUSÃO", sensorId: "TO-LC-09", coords: "-10.7906,-49.6199" },
+  {
+    id: "anapolis",
+    name: "ANÁPOLIS",
+    sensorId: "GO-AN-01",
+    coords: "-16.3267,-48.9530",
+  },
+  {
+    id: "formosa",
+    name: "FORMOSA",
+    sensorId: "GO-FO-02",
+    coords: "-15.5372,-47.3372",
+  },
+  {
+    id: "pirinopolis",
+    name: "PIRENÓPOLIS",
+    sensorId: "GO-PI-03",
+    coords: "-15.8558,-48.9597",
+  },
+  {
+    id: "jaragua",
+    name: "JARAGUÁ",
+    sensorId: "GO-JA-04",
+    coords: "-15.7529,-49.3344",
+  },
+  {
+    id: "sandolandia",
+    name: "SANDOLÂNDIA",
+    sensorId: "TO-SA-05",
+    coords: "-12.5408,-49.9192",
+  },
+  {
+    id: "novo-progresso",
+    name: "NOVO PROGRESSO",
+    sensorId: "PA-NP-06",
+    coords: "-7.1261,-55.3853",
+  },
+  {
+    id: "mirador",
+    name: "MIRADOR",
+    sensorId: "MA-MI-07",
+    coords: "-6.3745,-44.3683",
+  },
+  {
+    id: "mateiros",
+    name: "MATEIROS",
+    sensorId: "TO-MA-08",
+    coords: "-10.5464,-46.4168",
+  },
+  {
+    id: "lagoa-da-confusao",
+    name: "LAGOA DA CONFUSÃO",
+    sensorId: "TO-LC-09",
+    coords: "-10.7906,-49.6199",
+  },
 ];
 
 function now() {
@@ -35,8 +91,9 @@ function now() {
 }
 
 function createClientId() {
-  const randomPart = globalThis.crypto?.randomUUID?.()
-    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const randomPart =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `sentinela-front-${randomPart}`;
 }
 
@@ -75,8 +132,9 @@ let eventId = 0;
 // `mqtt` é carregado dinamicamente — nunca nulo no servidor, null até import()
 let mqttClient: MqttClient | null = null;
 let initialized = false;
-const lastSeen = new Map<string, number>();
 const listeners = new Set<() => void>();
+
+const OFFLINE_TIMEOUT_MS = 15_000;
 
 let mqttState: SimState = {
   zones: initZones(),
@@ -92,12 +150,65 @@ let mqttState: SimState = {
   dataMode: "mqtt",
 };
 
-function evt(kind: FeedEvent["kind"], title: string, detail: string): FeedEvent {
+function evt(
+  kind: FeedEvent["kind"],
+  title: string,
+  detail: string,
+): FeedEvent {
   return { id: ++eventId, time: now(), kind, title, detail };
 }
 
+// Agrupa múltiplos emit() disparados em rajada (ex.: as ~27 mensagens que o
+// sensor.py publica por ciclo, ~3 em 3s) numa única notificação. As mensagens
+// não chegam todas no mesmo frame — o broker/rede espalha a entrega por
+// centenas de ms — por isso o intervalo é uma janela de tempo (300ms), não
+// só o próximo frame: cobre a rajada inteira com um único re-render.
+const EMIT_DEBOUNCE_MS = 500;
+let emitScheduled = false;
 function emit() {
-  listeners.forEach((l) => l());
+  if (emitScheduled) return;
+  emitScheduled = true;
+  setTimeout(() => {
+    emitScheduled = false;
+    listeners.forEach((l) => l());
+  }, EMIT_DEBOUNCE_MS);
+}
+
+// ── Relógio/uptime: store independente, dedicado só ao header/footer ──
+// Fica fora de `mqttState` de propósito — assim o tick de 1s não força o
+// grid de zonas nem o mapa a re-renderizar, só os dois spans que o exibem.
+let clockState = { clock: "", uptimeSec: 0 };
+const clockListeners = new Set<() => void>();
+let clockTimerStarted = false;
+
+function ensureClockTimer() {
+  if (clockTimerStarted || typeof window === "undefined") return;
+  clockTimerStarted = true;
+  window.setInterval(() => {
+    clockState = {
+      clock: now(),
+      uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
+    };
+    clockListeners.forEach((l) => l());
+  }, 1000);
+}
+
+export function useClock(): { clock: string; uptimeSec: number } {
+  if (DATA_MODE === "sim") {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const simulated = useSim();
+    return { clock: simulated.clock, uptimeSec: simulated.uptimeSec };
+  }
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return useSyncExternalStore(
+    (cb) => {
+      clockListeners.add(cb);
+      ensureClockTimer();
+      return () => clockListeners.delete(cb);
+    },
+    () => clockState,
+    () => clockState,
+  );
 }
 
 function addEvent(event: FeedEvent, logLine: string) {
@@ -109,11 +220,15 @@ function addEvent(event: FeedEvent, logLine: string) {
 }
 
 function updateTelemetry(zoneId: string, metric: string, value: number) {
-  lastSeen.set(zoneId, Date.now());
   let changedZone: Zone | undefined;
   const zones = mqttState.zones.map((zone) => {
     if (zone.id !== zoneId) return zone;
-    const next = { ...zone, online: true, lastPingSec: 0 };
+    const next = {
+      ...zone,
+      online: true,
+      lastPingSec: 0,
+      lastSeenAt: Date.now(),
+    };
     if (metric === "temperatura") {
       next.prevTemp = next.temp;
       next.temp = value;
@@ -124,6 +239,12 @@ function updateTelemetry(zoneId: string, metric: string, value: number) {
       next.prevSmoke = next.smoke;
       next.smoke = value;
       next.smokeHistory = [...next.smokeHistory.slice(1), value];
+    } else if (metric === "lat" || metric === "lon") {
+      // Mock de incêndio reposicionando o marcador — só a metade recebida muda.
+      const [curLat, curLon] = next.coords.split(",").map(Number);
+      const lat = metric === "lat" ? value : curLat;
+      const lon = metric === "lon" ? value : curLon;
+      next.coords = `${lat},${lon}`;
     }
     next.risk = evaluateRisk(next.smoke, next.humidity, next.temp);
     changedZone = next;
@@ -132,8 +253,11 @@ function updateTelemetry(zoneId: string, metric: string, value: number) {
   mqttState = { ...mqttState, zones, lastReadSec: 0 };
   if (metric === "fumaca" && changedZone) {
     addEvent(
-      evt("telemetria", "TELEMETRIA recebida",
-          `${TOPIC_BASE}/${zoneId}/sensor/+ {t:${changedZone.temp},h:${changedZone.humidity},f:${changedZone.smoke}}`),
+      evt(
+        "telemetria",
+        "TELEMETRIA recebida",
+        `${TOPIC_BASE}/${zoneId}/sensor/+ {t:${changedZone.temp},h:${changedZone.humidity},f:${changedZone.smoke}}`,
+      ),
       `[ OK ] ${zoneId} → risco=${changedZone.risk}`,
     );
   }
@@ -144,14 +268,26 @@ function updateAlert(zoneId: string, payload: Record<string, unknown>) {
   const risk = String(payload.risco ?? "alto") as Risk;
   const confirmed = payload.firms_confirmado === true;
   const zones = mqttState.zones.map((zone) =>
-    zone.id === zoneId ? { ...zone, risk, firmsConfirmed: confirmed, firmsConf: confirmed ? 1 : 0 } : zone,
+    zone.id === zoneId
+      ? {
+          ...zone,
+          risk,
+          firmsConfirmed: confirmed,
+          firmsConf: confirmed ? 1 : 0,
+        }
+      : zone,
   );
   const kind: FeedEvent["kind"] = risk === "critico" ? "critico" : "regra";
   mqttState = { ...mqttState, zones };
   addEvent(
-    evt(kind, risk === "critico" ? "ALERTA CRÍTICO" : "REGRA · risco alto",
-        `${TOPIC_BASE}/${zoneId}/atuador/alerta · FIRMS=${confirmed ? "confirmado" : "não confirmado"}`),
-    confirmed ? `[ SAT] firms → foco ${zoneId}` : `[ ! ] ${zoneId} → risco=${risk}`,
+    evt(
+      kind,
+      risk === "critico" ? "ALERTA CRÍTICO" : "REGRA · risco alto",
+      `${TOPIC_BASE}/${zoneId}/atuador/alerta · FIRMS=${confirmed ? "confirmado" : "não confirmado"}`,
+    ),
+    confirmed
+      ? `[ SAT] firms → foco ${zoneId}`
+      : `[ ! ] ${zoneId} → risco=${risk}`,
   );
   emit();
 }
@@ -164,36 +300,48 @@ function updateFirms(zoneId: string, payload: Record<string, unknown>) {
     const latitude = Number(raw.latitude);
     const longitude = Number(raw.longitude);
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
-    return [{
-      id: String(raw.id ?? `${latitude}-${longitude}`),
-      latitude,
-      longitude,
-      frp: Number(raw.frp) || 0,
-      confidence: String(raw.confidence ?? "n/d"),
-      satellite: String(raw.satellite ?? "n/d"),
-      instrument: String(raw.instrument ?? "n/d"),
-      acquiredAt: raw.acquired_at ? String(raw.acquired_at) : null,
-      daynight: String(raw.daynight ?? "n/d"),
-      distanceKm: Number(raw.distance_km) || 0,
-    }];
+    return [
+      {
+        id: String(raw.id ?? `${latitude}-${longitude}`),
+        latitude,
+        longitude,
+        frp: Number(raw.frp) || 0,
+        confidence: String(raw.confidence ?? "n/d"),
+        satellite: String(raw.satellite ?? "n/d"),
+        instrument: String(raw.instrument ?? "n/d"),
+        acquiredAt: raw.acquired_at ? String(raw.acquired_at) : null,
+        daynight: String(raw.daynight ?? "n/d"),
+        distanceKm: Number(raw.distance_km) || 0,
+      },
+    ];
   });
-  const zones = mqttState.zones.map((zone) => zone.id === zoneId ? {
-    ...zone,
-    firmsConfirmed: Boolean(payload.confirmado),
-    firmsConf: hotspots.length,
-    firmsHotspots: hotspots,
-    firmsUpdatedAt: payload.atualizado_em ? String(payload.atualizado_em) : null,
-    firmsRadiusKm: Number(payload.raio_km) || zone.firmsRadiusKm,
-    firmsWindowHours: Number(payload.janela_horas) || 24,
-  } : zone);
+  const zones = mqttState.zones.map((zone) =>
+    zone.id === zoneId
+      ? {
+          ...zone,
+          firmsConfirmed: Boolean(payload.confirmado),
+          firmsConf: hotspots.length,
+          firmsHotspots: hotspots,
+          firmsUpdatedAt: payload.atualizado_em
+            ? String(payload.atualizado_em)
+            : null,
+          firmsRadiusKm: Number(payload.raio_km) || zone.firmsRadiusKm,
+          firmsWindowHours: Number(payload.janela_horas) || 24,
+        }
+      : zone,
+  );
   mqttState = { ...mqttState, zones };
   addEvent(
     evt(
       "satelite",
-      hotspots.length ? `FIRMS · ${hotspots.length} foco(s)` : "FIRMS · nenhum foco",
+      hotspots.length
+        ? `FIRMS · ${hotspots.length} foco(s)`
+        : "FIRMS · nenhum foco",
       `${zoneId} · janela ${Number(payload.janela_horas) || 24}h · FRP máx ${Number(payload.frp_max) || 0} MW`,
     ),
-    hotspots.length ? `[ SAT] ${zoneId} → ${hotspots.length} foco(s)` : `[ SAT] ${zoneId} → área sem foco`,
+    hotspots.length
+      ? `[ SAT] ${zoneId} → ${hotspots.length} foco(s)`
+      : `[ SAT] ${zoneId} → área sem foco`,
   );
   emit();
 }
@@ -201,9 +349,12 @@ function updateFirms(zoneId: string, payload: Record<string, unknown>) {
 function handleMessage(topic: string, raw: Uint8Array) {
   const parts = topic.split("/");
   if (parts.length < 5 || !topic.startsWith(`${TOPIC_BASE}/`)) return;
-  const zoneId  = parts.at(-3)!;
+  const zoneId = parts.at(-3)!;
   try {
-    const payload = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>;
+    const payload = JSON.parse(new TextDecoder().decode(raw)) as Record<
+      string,
+      unknown
+    >;
     if (parts.at(-2) === "sensor") {
       const value = Number(payload.valor);
       if (Number.isFinite(value)) updateTelemetry(zoneId, parts.at(-1)!, value);
@@ -213,7 +364,10 @@ function handleMessage(topic: string, raw: Uint8Array) {
       updateFirms(zoneId, payload);
     }
   } catch {
-    addEvent(evt("sistema", "MQTT · payload inválido", topic), `[ ! ] payload inválido → ${topic}`);
+    addEvent(
+      evt("sistema", "MQTT · payload inválido", topic),
+      `[ ! ] payload inválido → ${topic}`,
+    );
     emit();
   }
 }
@@ -223,16 +377,17 @@ function handleMessage(topic: string, raw: Uint8Array) {
  * Usa import() em vez de import estático para evitar avaliação no SSR.
  */
 function initializeMqtt() {
-  if (initialized || typeof window === "undefined" || DATA_MODE !== "mqtt") return;
+  if (initialized || typeof window === "undefined" || DATA_MODE !== "mqtt")
+    return;
   initialized = true;
 
   import("mqtt")
     .then(({ default: mqttLib }) => {
       mqttClient = mqttLib.connect(MQTT_URL, {
-        clientId:       createClientId(),
-        clean:          true,
+        clientId: createClientId(),
+        clean: true,
         reconnectPeriod: 3000,
-        connectTimeout:  10000,
+        connectTimeout: 10000,
       });
 
       mqttClient.on("connect", () => {
@@ -245,7 +400,10 @@ function initializeMqtt() {
           { qos: 0 },
         );
         mqttState = { ...mqttState, mqttConnected: true };
-        addEvent(evt("sistema", "MQTT · conectado", MQTT_URL), "[ OK ] dashboard → broker conectado");
+        addEvent(
+          evt("sistema", "MQTT · conectado", MQTT_URL),
+          "[ OK ] dashboard → broker conectado",
+        );
         emit();
       });
 
@@ -262,38 +420,44 @@ function initializeMqtt() {
       });
 
       mqttClient.on("error", (error: Error) => {
-        addEvent(evt("sistema", "MQTT · erro", error.message), `[ ! ] mqtt → ${error.message}`);
+        addEvent(
+          evt("sistema", "MQTT · erro", error.message),
+          `[ ! ] mqtt → ${error.message}`,
+        );
         emit();
       });
     })
     .catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      addEvent(evt("sistema", "MQTT · falha ao carregar", msg), `[ ! ] mqtt → import failed`);
+      addEvent(
+        evt("sistema", "MQTT · falha ao carregar", msg),
+        `[ ! ] mqtt → import failed`,
+      );
       emit();
     });
 
-  // Ticker: uptime + detecção de zonas offline (roda independente do MQTT)
+  // Detecção de zonas offline: roda a cada 1s mas só toca o estado (e
+  // portanto só re-renderiza) quando alguma zona realmente muda de status —
+  // "há Xs desde a última leitura" é calculado localmente em cada card
+  // (ver LivePing em ZoneCard.tsx), não precisa de um tick global aqui.
   window.setInterval(() => {
     const current = Date.now();
+    let changed = false;
     const zones = mqttState.zones.map((zone) => {
-      const seen = lastSeen.get(zone.id);
-      if (!seen) return zone;
-      const lastPingSec = Math.floor((current - seen) / 1000);
+      if (!zone.lastSeenAt) return zone;
+      const online = current - zone.lastSeenAt < OFFLINE_TIMEOUT_MS;
+      if (online === zone.online) return zone;
+      changed = true;
       return {
         ...zone,
-        lastPingSec,
-        online: lastPingSec < 15,
-        risk: lastPingSec < 15 ? zone.risk : ("offline" as Risk),
+        online,
+        risk: online ? zone.risk : ("offline" as Risk),
       };
     });
-    mqttState = {
-      ...mqttState,
-      zones,
-      clock:       now(),
-      lastReadSec: Math.min(999, mqttState.lastReadSec + 1),
-      uptimeSec:   Math.floor((current - startedAt) / 1000),
-    };
-    emit();
+    if (changed) {
+      mqttState = { ...mqttState, zones };
+      emit();
+    }
   }, 1000);
 }
 
@@ -326,12 +490,12 @@ export function sendIotCommand(zoneId: string, action: string) {
     sendSimCommand(zoneId, action);
     return;
   }
-  const topic   = `${TOPIC_BASE}/${zoneId}/atuador/alerta`;
+  const topic = `${TOPIC_BASE}/${zoneId}/atuador/alerta`;
   const payload = JSON.stringify({
-    zona:      zoneId,
-    risco:     "alto",
-    acao:      action,
-    origem:    "dashboard",
+    zona: zoneId,
+    risco: "alto",
+    acao: action,
+    origem: "dashboard",
     timestamp: new Date().toISOString(),
   });
   mqttClient?.publish(topic, payload, { qos: 1 });

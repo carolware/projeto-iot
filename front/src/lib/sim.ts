@@ -47,6 +47,9 @@ export interface Zone {
   firmsWindowHours: number;
   smokeHistory: number[];
   lastPingSec: number;
+  /** epoch ms da última leitura real recebida — permite que o card calcule
+   * "há Xs" localmente, sem depender de um tick global. Ausente/0 no modo sim. */
+  lastSeenAt?: number;
 }
 
 export interface FeedEvent {
@@ -70,15 +73,87 @@ export interface SimState {
 }
 
 const ZONE_DEFS = [
-  { id: "anapolis",          name: "ANÁPOLIS",          sensorId: "GO-AN-01", coords: "-16.3267,-48.9530", temp: 30, humidity: 48, smoke: 8  },
-  { id: "formosa",           name: "FORMOSA",            sensorId: "GO-FO-02", coords: "-15.5372,-47.3372", temp: 31, humidity: 45, smoke: 6  },
-  { id: "pirinopolis",       name: "PIRENÓPOLIS",        sensorId: "GO-PI-03", coords: "-15.8558,-48.9597", temp: 30, humidity: 47, smoke: 10 },
-  { id: "jaragua",           name: "JARAGUÁ",            sensorId: "GO-JA-04", coords: "-15.7529,-49.3344", temp: 31, humidity: 44, smoke: 9  },
-  { id: "sandolandia",       name: "SANDOLÂNDIA",        sensorId: "TO-SA-05", coords: "-12.5408,-49.9192", temp: 33, humidity: 38, smoke: 15 },
-  { id: "novo-progresso",    name: "NOVO PROGRESSO",     sensorId: "PA-NP-06", coords: "-7.1261,-55.3853",  temp: 32, humidity: 55, smoke: 18 },
-  { id: "mirador",           name: "MIRADOR",            sensorId: "MA-MI-07", coords: "-6.3745,-44.3683",  temp: 34, humidity: 31, smoke: 28 },
-  { id: "mateiros",          name: "MATEIROS",           sensorId: "TO-MA-08", coords: "-10.5464,-46.4168", temp: 35, humidity: 28, smoke: 35 },
-  { id: "lagoa-da-confusao", name: "LAGOA DA CONFUSÃO", sensorId: "TO-LC-09", coords: "-10.7906,-49.6199", temp: 34, humidity: 30, smoke: 31 },
+  {
+    id: "anapolis",
+    name: "ANÁPOLIS",
+    sensorId: "GO-AN-01",
+    coords: "-16.3267,-48.9530",
+    temp: 30,
+    humidity: 48,
+    smoke: 8,
+  },
+  {
+    id: "formosa",
+    name: "FORMOSA",
+    sensorId: "GO-FO-02",
+    coords: "-15.5372,-47.3372",
+    temp: 31,
+    humidity: 45,
+    smoke: 6,
+  },
+  {
+    id: "pirinopolis",
+    name: "PIRENÓPOLIS",
+    sensorId: "GO-PI-03",
+    coords: "-15.8558,-48.9597",
+    temp: 30,
+    humidity: 47,
+    smoke: 10,
+  },
+  {
+    id: "jaragua",
+    name: "JARAGUÁ",
+    sensorId: "GO-JA-04",
+    coords: "-15.7529,-49.3344",
+    temp: 31,
+    humidity: 44,
+    smoke: 9,
+  },
+  {
+    id: "sandolandia",
+    name: "SANDOLÂNDIA",
+    sensorId: "TO-SA-05",
+    coords: "-12.5408,-49.9192",
+    temp: 33,
+    humidity: 38,
+    smoke: 15,
+  },
+  {
+    id: "novo-progresso",
+    name: "NOVO PROGRESSO",
+    sensorId: "PA-NP-06",
+    coords: "-7.1261,-55.3853",
+    temp: 32,
+    humidity: 55,
+    smoke: 18,
+  },
+  {
+    id: "mirador",
+    name: "MIRADOR",
+    sensorId: "MA-MI-07",
+    coords: "-6.3745,-44.3683",
+    temp: 34,
+    humidity: 31,
+    smoke: 28,
+  },
+  {
+    id: "mateiros",
+    name: "MATEIROS",
+    sensorId: "TO-MA-08",
+    coords: "-10.5464,-46.4168",
+    temp: 35,
+    humidity: 28,
+    smoke: 35,
+  },
+  {
+    id: "lagoa-da-confusao",
+    name: "LAGOA DA CONFUSÃO",
+    sensorId: "TO-LC-09",
+    coords: "-10.7906,-49.6199",
+    temp: 34,
+    humidity: 30,
+    smoke: 31,
+  },
 ];
 
 function evaluateRisk(smoke: number, humidity: number, temp: number): Risk {
@@ -94,7 +169,11 @@ function now(): string {
 }
 
 let eventId = 0;
-function evt(kind: FeedEvent["kind"], title: string, detail: string): FeedEvent {
+function evt(
+  kind: FeedEvent["kind"],
+  title: string,
+  detail: string,
+): FeedEvent {
   return { id: ++eventId, time: now(), kind, title, detail };
 }
 
@@ -133,10 +212,22 @@ function initZones(): Zone[] {
 let state: SimState = {
   zones: initZones(),
   feed: [
-    evt("regra",      "REGRA · risco médio",  "sandolandia/sensor · fumaca=15 umid=22"),
-    evt("satelite",   "SATÉLITE · varredura",  "firms/scan · nenhum foco confirmado"),
-    evt("telemetria", "TELEMETRIA ok",          "novo-progresso/sensor {t:37,h:28,f:18}"),
-    evt("sistema",    "GATEWAY · boot",         "broker=broker.hivemq.com:1883"),
+    evt(
+      "regra",
+      "REGRA · risco médio",
+      "sandolandia/sensor · fumaca=15 umid=22",
+    ),
+    evt(
+      "satelite",
+      "SATÉLITE · varredura",
+      "firms/scan · nenhum foco confirmado",
+    ),
+    evt(
+      "telemetria",
+      "TELEMETRIA ok",
+      "novo-progresso/sensor {t:37,h:28,f:18}",
+    ),
+    evt("sistema", "GATEWAY · boot", "broker=broker.hivemq.com:1883"),
   ],
   log: [
     "[ .. ] sandolandia → risco=medio",
@@ -167,7 +258,13 @@ function tick() {
       if (Math.random() < 0.06) {
         nz.online = true;
         nz.lastPingSec = 1;
-        events.push(evt("sistema", "SENSOR reconectou", `${nz.topic} · sinal restabelecido`));
+        events.push(
+          evt(
+            "sistema",
+            "SENSOR reconectou",
+            `${nz.topic} · sinal restabelecido`,
+          ),
+        );
         logLines.push(`[ OK ] ${nz.id} → reconectado`);
       } else {
         nz.lastPingSec += 2;
@@ -190,11 +287,21 @@ function tick() {
     const rank: Risk[] = ["baixo", "medio", "alto", "critico"];
     if (rank.indexOf(nz.risk) > rank.indexOf(prevRisk)) {
       if (nz.risk === "critico") {
-        events.push(evt("critico", "ALERTA CRÍTICO", `incendio/${nz.id}/alerta · risco=critico`));
+        events.push(
+          evt(
+            "critico",
+            "ALERTA CRÍTICO",
+            `incendio/${nz.id}/alerta · risco=critico`,
+          ),
+        );
         logLines.push(`[ OK ] ${nz.id} → risco=critico`);
       } else if (nz.risk === "alto") {
         events.push(
-          evt("regra", "REGRA · risco alto", `incendio/${nz.id}/alerta · fumaca=${nz.smoke} umid=${nz.humidity}`),
+          evt(
+            "regra",
+            "REGRA · risco alto",
+            `incendio/${nz.id}/alerta · fumaca=${nz.smoke} umid=${nz.humidity}`,
+          ),
         );
         logLines.push(`[ ! ] ${nz.id} → risco=alto`);
       } else {
@@ -208,7 +315,11 @@ function tick() {
         nz.firmsConfirmed = true;
         nz.firmsConf = Math.round((0.75 + Math.random() * 0.24) * 100) / 100;
         events.push(
-          evt("satelite", "SATÉLITE · foco", `firms/confirm · conf=${nz.firmsConf} dist=${(0.4 + Math.random() * 2).toFixed(1)}km`),
+          evt(
+            "satelite",
+            "SATÉLITE · foco",
+            `firms/confirm · conf=${nz.firmsConf} dist=${(0.4 + Math.random() * 2).toFixed(1)}km`,
+          ),
         );
         logLines.push(`[ SAT] firms → foco ${nz.id}`);
       }
@@ -219,7 +330,11 @@ function tick() {
 
     if (Math.random() < 0.12) {
       events.push(
-        evt("telemetria", "TELEMETRIA ok", `incendio/${nz.id}/telemetria {t:${nz.temp},h:${nz.humidity},f:${nz.smoke}}`),
+        evt(
+          "telemetria",
+          "TELEMETRIA ok",
+          `incendio/${nz.id}/telemetria {t:${nz.temp},h:${nz.humidity},f:${nz.smoke}}`,
+        ),
       );
     }
     return nz;
@@ -265,7 +380,10 @@ export function sendCommand(zoneId: string, action: string) {
   state = {
     ...state,
     commandsSent: state.commandsSent + 1,
-    feed: [evt("atuador", `COMANDO · ${action.toUpperCase()}`, payload), ...state.feed].slice(0, 9),
+    feed: [
+      evt("atuador", `COMANDO · ${action.toUpperCase()}`, payload),
+      ...state.feed,
+    ].slice(0, 9),
     log: [`[ TX ] ${zoneId} → ${action}`, ...state.log].slice(0, 6),
   };
   emit();

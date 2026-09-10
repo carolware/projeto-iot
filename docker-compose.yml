@@ -1,0 +1,36 @@
+services:
+  atuador:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "atuador.py"]
+    env_file: .env
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "gateway.py"]
+    env_file: .env
+    depends_on:
+      - atuador
+    restart: unless-stopped
+
+  sensor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "sensor.py"]
+    env_file: .env
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+  front:
+    build:
+      context: ./front
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    restart: unless-stopped

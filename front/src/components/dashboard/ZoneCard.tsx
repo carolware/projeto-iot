@@ -1,5 +1,25 @@
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { RISK_LABEL, type Zone } from "@/lib/sim";
 import { StatusDot } from "./StatusDot";
+
+/**
+ * Segundos desde a última leitura da zona, atualizado a cada 1s por conta
+ * própria (useState local) — evita que o card/grid/mapa inteiro precise
+ * re-renderizar só pra esse número contar.
+ */
+function LivePing({ zone }: { zone: Zone }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!zone.lastSeenAt) return;
+    const id = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [zone.lastSeenAt]);
+
+  const seconds = zone.lastSeenAt
+    ? Math.max(0, Math.floor((Date.now() - zone.lastSeenAt) / 1000))
+    : zone.lastPingSec;
+  return <>{seconds}</>;
+}
 
 function delta(cur: number, prev: number, unit = "") {
   const d = Math.round((cur - prev) * 10) / 10;
@@ -53,7 +73,7 @@ function tempTone(z: Zone) {
   return z.temp >= 40 ? "text-danger" : "text-fg";
 }
 
-export function ZoneHero({ zone, index }: { zone: Zone; index: number }) {
+export function ZoneHero({ zone, index, onSelect }: { zone: Zone; index: number; onSelect?: (zone: Zone) => void }) {
   const dT = delta(zone.temp, zone.prevTemp, "°");
   const dH = delta(zone.humidity, zone.prevHumidity, "%");
   const dS = delta(zone.smoke, zone.prevSmoke);
@@ -61,8 +81,17 @@ export function ZoneHero({ zone, index }: { zone: Zone; index: number }) {
 
   return (
     <article
-      className="sm:col-span-2 xl:col-span-3 rounded-md border border-danger/60 bg-surface ring-1 ring-danger/30 p-4"
+      className="sm:col-span-2 xl:col-span-3 rounded-md border border-danger/60 bg-surface ring-1 ring-danger/30 p-4 cursor-pointer"
       style={{ animation: "enter .5s cubic-bezier(0.32,0.72,0,1) both" }}
+      onClick={() => onSelect?.(zone)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect?.(zone);
+        }
+      }}
     >
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -82,7 +111,7 @@ export function ZoneHero({ zone, index }: { zone: Zone; index: number }) {
             MQTT <span className="text-fg">{zone.topic}</span>
           </div>
           <div>
-            ÚLT. PING <span className="text-ok">há {zone.lastPingSec}s</span>
+            ÚLT. PING <span className="text-ok">há <LivePing zone={zone} />s</span>
           </div>
         </div>
       </div>
@@ -130,12 +159,25 @@ export function ZoneHero({ zone, index }: { zone: Zone; index: number }) {
   );
 }
 
-export function ZoneCard({ zone, index }: { zone: Zone; index: number }) {
+export function ZoneCard({ zone, index, onSelect }: { zone: Zone; index: number; onSelect?: (zone: Zone) => void }) {
+  const clickable = {
+    onClick: () => onSelect?.(zone),
+    role: "button" as const,
+    tabIndex: 0,
+    onKeyDown: (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onSelect?.(zone);
+      }
+    },
+  };
+
   if (!zone.online) {
     return (
       <article
-        className="rounded-md border border-hair bg-surface p-3.5 opacity-70"
+        className="rounded-md border border-hair bg-surface p-3.5 opacity-70 cursor-pointer"
         style={{ animation: `enter .5s cubic-bezier(0.32,0.72,0,1) both`, animationDelay: `${index * 60}ms` }}
+        {...clickable}
       >
         <div className="flex items-center justify-between">
           <h3 className="font-display text-[16px] tracking-wide text-fg">{zone.name}</h3>
@@ -154,7 +196,7 @@ export function ZoneCard({ zone, index }: { zone: Zone; index: number }) {
             </div>
           ))}
         </div>
-        <div className="mt-2 font-mono text-[9px] text-danger">sem sinal há {zone.lastPingSec}s · retry 3/5</div>
+        <div className="mt-2 font-mono text-[9px] text-danger">sem sinal há <LivePing zone={zone} />s · retry 3/5</div>
       </article>
     );
   }
@@ -164,8 +206,9 @@ export function ZoneCard({ zone, index }: { zone: Zone; index: number }) {
 
   return (
     <article
-      className={`rounded-md border ${border} bg-surface p-3.5`}
+      className={`rounded-md border ${border} bg-surface p-3.5 cursor-pointer`}
       style={{ animation: `enter .5s cubic-bezier(0.32,0.72,0,1) both`, animationDelay: `${index * 60}ms` }}
+      {...clickable}
     >
       <div className="flex items-center justify-between">
         <h3 className="font-display text-[16px] tracking-wide text-fg">{zone.name}</h3>

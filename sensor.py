@@ -23,6 +23,7 @@ Zonas monitoradas (Goiás · Tocantins · Pará · Maranhão):
 
 import json
 import logging
+import math
 import os
 import random
 import time
@@ -50,6 +51,29 @@ FIRMS_RAIO   = float(os.getenv("FIRMS_RAIO_GRAUS", "0.25"))  # ~28 km para zonas
 
 REFRESH_METEO_MIN = int(os.getenv("SENSOR_REFRESH_METEO_MIN", "10"))
 REFRESH_FIRMS_MIN = int(os.getenv("SENSOR_REFRESH_FIRMS_MIN", "30"))
+
+# ──────────────────────────────────────────────
+# Mock manual de incêndio — sobrepõe uma zona com valores fixos de crise,
+# ignorando Open-Meteo/FIRMS para ela. As demais zonas seguem com dados reais.
+# ──────────────────────────────────────────────
+
+MOCK_ZONA       = os.getenv("MOCK_ZONA_INCENDIO", "").strip().lower()
+MOCK_TEMPERATURA = float(os.getenv("MOCK_TEMPERATURA", "42.0"))
+MOCK_UMIDADE     = float(os.getenv("MOCK_UMIDADE", "10.0"))
+MOCK_FUMACA      = float(os.getenv("MOCK_FUMACA", "93.0"))
+
+# Coordenada opcional: reposiciona o marcador da zona mockada no mapa (e a
+# consulta FIRMS do gateway.py) em vez de usar a coordenada real de ZONA_COORDS.
+_mock_lat_env = os.getenv("MOCK_LAT", "").strip()
+_mock_lon_env = os.getenv("MOCK_LON", "").strip()
+MOCK_LAT: float | None = float(_mock_lat_env) if _mock_lat_env else None
+MOCK_LON: float | None = float(_mock_lon_env) if _mock_lon_env else None
+
+# Tópico de controle: liga/troca/desliga o mock em tempo real, sem reiniciar
+# o processo. Payload: {"ativo": true, "zona": "mateiros", "temperatura": 42,
+# "umidade": 10, "fumaca": 93, "lat": -10.1, "lon": -48.2} — todos os campos
+# além de "zona" são opcionais.
+MOCK_COMANDO_TOPIC = f"{TOPIC_PREFIX}/comando/mock"
 
 # ──────────────────────────────────────────────
 # Mapeamento: zona → coordenadas geográficas
@@ -230,11 +254,130 @@ def leitura_atual(zona: str) -> dict:
     }
 
 
+def aplicar_mock_incendio(zona: str) -> None:
+    """Sobrescreve a zona mockada com valores fixos de incêndio crítico."""
+    estado[zona]["temperatura"] = MOCK_TEMPERATURA
+    estado[zona]["umidade"]     = MOCK_UMIDADE
+    estado[zona]["fumaca"]      = MOCK_FUMACA
+
+
+def _distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    raio_terra = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+    return raio_terra * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _coords_dentro_do_raio(zona: str, lat: float, lon: float) -> bool:
+    """A coordenada customizada precisa cair dentro do raio de busca FIRMS
+    da própria zona (o mesmo raio do círculo tracejado no mapa do front)."""
+    lat_real, lon_real = ZONA_COORDS[zona]
+    raio_km = FIRMS_RAIO * 111
+    return _distancia_km(lat_real, lon_real, lat, lon) <= raio_km
+
+
+def _forcar_refresh_real(zona: str) -> None:
+    """Zera o cache da zona para que o próximo ciclo busque dados reais na hora."""
+    _ts_meteo[zona] = 0.0
+    _ts_firms[zona] = 0.0
+
+
+def _publicar_coords(client: mqtt.Client, zona: str, lat: float, lon: float) -> None:
+    """Publica lat/lon da zona — move o marcador no mapa do front e a coordenada
+    de consulta FIRMS do gateway.py (que também assina o tópico de comando)."""
+    ts = datetime.now(timezone.utc).isoformat()
+    client.publish(f"{TOPIC_PREFIX}/{zona}/sensor/lat",
+                    json.dumps({"valor": lat, "timestamp": ts, "fonte": "mock"}), retain=True)
+    client.publish(f"{TOPIC_PREFIX}/{zona}/sensor/lon",
+                    json.dumps({"valor": lon, "timestamp": ts, "fonte": "mock"}), retain=True)
+
+
+def tratar_comando_mock(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
+    """
+    Liga/troca/desliga o mock de incêndio em tempo real via MQTT, sem
+    precisar reiniciar o processo.
+
+    Payload esperado (JSON):
+      {"ativo": true, "zona": "mateiros", "temperatura": 42, "umidade": 10,
+       "fumaca": 93, "lat": -10.1, "lon": -48.2}
+      {"ativo": false}   → desativa o mock, zona volta a usar dados reais
+    """
+    global MOCK_ZONA, MOCK_TEMPERATURA, MOCK_UMIDADE, MOCK_FUMACA, MOCK_LAT, MOCK_LON
+
+    try:
+        payload = json.loads(msg.payload.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        log.warning("[MOCK] comando com payload inválido: %r", msg.payload)
+        return
+
+    zona_anterior = MOCK_ZONA
+    tinha_coords_mockadas = MOCK_LAT is not None or MOCK_LON is not None
+
+    if not payload.get("ativo", True):
+        MOCK_ZONA = ""
+        if zona_anterior:
+            _forcar_refresh_real(zona_anterior)
+            if tinha_coords_mockadas and zona_anterior in ZONA_COORDS:
+                lat_real, lon_real = ZONA_COORDS[zona_anterior]
+                _publicar_coords(client, zona_anterior, lat_real, lon_real)
+            MOCK_LAT = MOCK_LON = None
+            log.warning("[MOCK] desativado (zona anterior: %s) — dados reais no próximo ciclo", zona_anterior)
+        return
+
+    zona = str(payload.get("zona", "")).strip().lower()
+    if zona not in ZONAS:
+        log.warning("[MOCK] comando ignorado: zona %r inválida (opções: %s)", zona, ", ".join(ZONAS))
+        return
+
+    if zona_anterior and zona_anterior != zona and tinha_coords_mockadas and zona_anterior in ZONA_COORDS:
+        lat_real, lon_real = ZONA_COORDS[zona_anterior]
+        _publicar_coords(client, zona_anterior, lat_real, lon_real)  # zona antiga volta pro lugar
+
+    MOCK_TEMPERATURA = float(payload.get("temperatura", MOCK_TEMPERATURA))
+    MOCK_UMIDADE     = float(payload.get("umidade", MOCK_UMIDADE))
+    MOCK_FUMACA      = float(payload.get("fumaca", MOCK_FUMACA))
+    lat = payload.get("lat")
+    lon = payload.get("lon")
+    if lat is not None and lon is not None:
+        lat_f, lon_f = float(lat), float(lon)
+        if _coords_dentro_do_raio(zona, lat_f, lon_f):
+            MOCK_LAT, MOCK_LON = lat_f, lon_f
+        else:
+            log.warning("[MOCK] coordenada (%.4f,%.4f) fora do raio de %s (%.1f km) — ignorada, zona mantém posição real.",
+                        lat_f, lon_f, zona, FIRMS_RAIO * 111)
+            MOCK_LAT = MOCK_LON = None
+    else:
+        MOCK_LAT = MOCK_LON = None
+    MOCK_ZONA = zona
+    aplicar_mock_incendio(zona)
+    if MOCK_LAT is not None and MOCK_LON is not None:
+        _publicar_coords(client, zona, MOCK_LAT, MOCK_LON)
+    if zona_anterior and zona_anterior != zona:
+        _forcar_refresh_real(zona_anterior)  # zona antiga volta a dados reais no próximo ciclo
+
+    coords_txt = f" @{MOCK_LAT},{MOCK_LON}" if MOCK_LAT is not None else ""
+    log.warning("[MOCK] ativado → %s%s (temp=%.1f°C umid=%.1f%% fumaca=%.1f%%)",
+                zona, coords_txt, MOCK_TEMPERATURA, MOCK_UMIDADE, MOCK_FUMACA)
+
+
 def atualizar_fontes(zona: str) -> None:
     """
     Verifica se o cache das APIs expirou e, se sim, dispara nova consulta.
     Chamada a cada ciclo de publicação MQTT.
+
+    Se a zona for a MOCK_ZONA, as APIs reais são ignoradas e os valores
+    fixos de incêndio são aplicados em vez disso.
     """
+    if zona == MOCK_ZONA:
+        aplicar_mock_incendio(zona)
+        return
+
     agora = time.time()
     lat, lon = ZONA_COORDS[zona]
 
@@ -251,21 +394,25 @@ def atualizar_fontes(zona: str) -> None:
 
 def publicar_leitura(client: mqtt.Client, leitura: dict) -> None:
     """Publica temperatura, umidade e fumaça em tópicos MQTT separados."""
-    zona = leitura["zona"]
-    ts   = leitura["timestamp"]
+    zona    = leitura["zona"]
+    ts      = leitura["timestamp"]
+    mockada = zona == MOCK_ZONA
+    fonte_meteo  = "mock" if mockada else "open-meteo"
+    fonte_fumaca = "mock" if mockada else "firms-proxy"
 
     client.publish(f"{TOPIC_PREFIX}/{zona}/sensor/temperatura",
-                   json.dumps({"valor": leitura["temperatura"], "timestamp": ts, "fonte": "open-meteo"}))
+                   json.dumps({"valor": leitura["temperatura"], "timestamp": ts, "fonte": fonte_meteo}))
     client.publish(f"{TOPIC_PREFIX}/{zona}/sensor/umidade",
-                   json.dumps({"valor": leitura["umidade"],     "timestamp": ts, "fonte": "open-meteo"}))
+                   json.dumps({"valor": leitura["umidade"],     "timestamp": ts, "fonte": fonte_meteo}))
     client.publish(f"{TOPIC_PREFIX}/{zona}/sensor/fumaca",
-                   json.dumps({"valor": leitura["fumaca"],      "timestamp": ts, "fonte": "firms-proxy"}))
+                   json.dumps({"valor": leitura["fumaca"],      "timestamp": ts, "fonte": fonte_fumaca}))
 
+    tag = " [MOCK INCÊNDIO]" if mockada else ""
     print(
         f"[sensor] {zona:20s} "
         f"temp={leitura['temperatura']:5.1f}c  "
         f"umid={leitura['umidade']:5.1f}%  "
-        f"fumaca={leitura['fumaca']:5.1f}%"
+        f"fumaca={leitura['fumaca']:5.1f}%{tag}"
     )
 
 
@@ -280,6 +427,9 @@ def inicializar_dados() -> None:
     """
     log.info("Buscando dados reais das APIs (Open-Meteo + NASA FIRMS)...")
     for zona in ZONAS:
+        if zona == MOCK_ZONA:
+            aplicar_mock_incendio(zona)
+            continue
         lat, lon = ZONA_COORDS[zona]
         buscar_meteorologia(zona, lat, lon)
         buscar_focos_firms(zona, lat, lon)
@@ -291,21 +441,45 @@ def inicializar_dados() -> None:
 # Entrypoint
 # ──────────────────────────────────────────────
 
+def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
+    global MOCK_LAT, MOCK_LON
+    client.subscribe(MOCK_COMANDO_TOPIC, qos=1)
+    log.info("Inscrito em %s (controle de mock em tempo real)", MOCK_COMANDO_TOPIC)
+    if MOCK_ZONA in ZONAS and MOCK_LAT is not None and MOCK_LON is not None:
+        if _coords_dentro_do_raio(MOCK_ZONA, MOCK_LAT, MOCK_LON):
+            _publicar_coords(client, MOCK_ZONA, MOCK_LAT, MOCK_LON)
+        else:
+            log.warning("[MOCK] MOCK_LAT/MOCK_LON fora do raio de %s (%.1f km) — ignorando, zona mantém posição real.",
+                        MOCK_ZONA, FIRMS_RAIO * 111)
+            MOCK_LAT = MOCK_LON = None
+
+
 def main() -> None:
     print("=" * 55)
     print("  Sensor SENTINELA — Dados REAIS")
     print(f"  Broker  : {BROKER}:{PORT}")
     print(f"  Meteo   : Open-Meteo (a cada {REFRESH_METEO_MIN} min)")
     print(f"  Fogo    : NASA FIRMS (a cada {REFRESH_FIRMS_MIN} min)")
+    if MOCK_ZONA:
+        if MOCK_ZONA in ZONAS:
+            coords_txt = f" @{MOCK_LAT},{MOCK_LON}" if MOCK_LAT is not None else ""
+            print(f"  MOCK    : {MOCK_ZONA}{coords_txt} → incêndio simulado "
+                  f"(temp={MOCK_TEMPERATURA}°C umid={MOCK_UMIDADE}% fumaca={MOCK_FUMACA}%)")
+        else:
+            log.warning("MOCK_ZONA_INCENDIO=%r não é uma zona válida (%s); mock ignorado.",
+                        MOCK_ZONA, ", ".join(ZONAS))
     print("=" * 55)
 
     inicializar_dados()
 
     client = mqtt.Client(client_id=CLIENT_ID)
+    client.on_connect = on_connect
+    client.message_callback_add(MOCK_COMANDO_TOPIC, tratar_comando_mock)
     client.connect(BROKER, PORT, keepalive=60)
     client.loop_start()
 
     print(f"\nPublicando em '{TOPIC_PREFIX}/*'")
+    print(f"Controle de mock em   '{MOCK_COMANDO_TOPIC}'")
     print("Ctrl+C para parar\n")
 
     try:

@@ -36,6 +36,7 @@ PORT        = int(os.getenv("MQTT_PORT", "1883"))
 CLIENT_ID   = f"gateway-sentinela-{uuid.uuid4().hex[:10]}"
 TOPIC_BASE  = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
 SUB_PATTERN = f"{TOPIC_BASE}/+/sensor/+"   # escuta todos os sensores
+MOCK_COMANDO_TOPIC = f"{TOPIC_BASE}/comando/mock"
 FIRMS_KEY   = os.getenv("FIRMS_MAP_KEY", "")
 FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")  # ou MODIS_NRT
 FIRMS_DAYS  = int(os.getenv("FIRMS_DAYS", "1"))             # janela temporal (dias)
@@ -121,6 +122,7 @@ class EstadoZona:
         self.firms_confirmado: bool     = False
         self.ultimo_firms_resultado: dict = {}
         self.lock = threading.Lock()
+        self.debounce_timer: threading.Timer | None = None
 
     def atualizar(self, campo: str, valor: float) -> None:
         with self.lock:
@@ -136,6 +138,55 @@ class EstadoZona:
 
 
 zonas: dict[str, EstadoZona] = {z: EstadoZona(z) for z in ZONA_COORDS}
+
+# Coordenada mockada em tempo real (via mock_incendio.py/sensor.py) que
+# sobrepõe ZONA_COORDS na consulta FIRMS enquanto a zona estiver em mock.
+MOCK_ZONA: str = ""
+MOCK_LAT: float | None = None
+MOCK_LON: float | None = None
+
+
+def coords_da_zona(zona: str) -> tuple[float, float] | None:
+    if zona == MOCK_ZONA and MOCK_LAT is not None and MOCK_LON is not None:
+        return (MOCK_LAT, MOCK_LON)
+    return ZONA_COORDS.get(zona)
+
+
+def on_comando_mock(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
+    """Espelha o comando de mock do sensor.py só para saber onde consultar o
+    FIRMS — quem decide os valores de temperatura/umidade/fumaça é o sensor."""
+    global MOCK_ZONA, MOCK_LAT, MOCK_LON
+
+    try:
+        payload = json.loads(msg.payload.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+
+    if not payload.get("ativo", True):
+        MOCK_ZONA = ""
+        MOCK_LAT = MOCK_LON = None
+        return
+
+    zona = str(payload.get("zona", "")).strip().lower()
+    if zona not in ZONA_COORDS:
+        return
+
+    lat = payload.get("lat")
+    lon = payload.get("lon")
+    MOCK_ZONA = zona
+    if lat is not None and lon is not None:
+        lat_f, lon_f = float(lat), float(lon)
+        lat_real, lon_real = ZONA_COORDS[zona]
+        raio_km = FIRMS_RAIO * 111
+        if _distancia_km(lat_real, lon_real, lat_f, lon_f) <= raio_km:
+            MOCK_LAT, MOCK_LON = lat_f, lon_f
+            log.warning("[MOCK] FIRMS de %s passa a consultar @%.4f,%.4f", zona, MOCK_LAT, MOCK_LON)
+        else:
+            MOCK_LAT = MOCK_LON = None
+            log.warning("[MOCK] coordenada (%.4f,%.4f) fora do raio de %s (%.1f km) — ignorada, FIRMS mantém posição real.",
+                        lat_f, lon_f, zona, raio_km)
+    else:
+        MOCK_LAT = MOCK_LON = None
 
 
 # ──────────────────────────────────────────────
@@ -169,6 +220,34 @@ def _resultado_firms_vazio(erro: str | None = None) -> dict:
     if erro:
         resultado["erro"] = erro
     return resultado
+
+
+def _resultado_firms_mock(lat: float, lon: float) -> dict:
+    """Fabrica uma confirmação de satélite na coordenada exata do mock —
+    dispensa consultar a API real, que não teria foco nenhum ali."""
+    ts = datetime.now(timezone.utc).isoformat()
+    hotspot = {
+        "id": f"mock-{lat}-{lon}",
+        "latitude": round(lat, 5),
+        "longitude": round(lon, 5),
+        "frp": 145.0,
+        "confidence": "alta (mock)",
+        "satellite": "MOCK",
+        "instrument": "MOCK",
+        "acquired_at": ts,
+        "daynight": "D",
+        "distance_km": 0.0,
+    }
+    return {
+        "focos": 1,
+        "confirmado": True,
+        "frp_max": hotspot["frp"],
+        "distancia_km": 0.0,
+        "raio_km": round(FIRMS_RAIO * 111, 1),
+        "janela_horas": FIRMS_DAYS * 24,
+        "atualizado_em": ts,
+        "hotspots": [hotspot],
+    }
 
 
 def consultar_firms(lat: float, lon: float) -> dict:
@@ -246,6 +325,24 @@ def publicar_status_firms(client: mqtt.Client, zona: str, resultado: dict) -> No
 # Lógica principal do gateway
 # ──────────────────────────────────────────────
 
+# sensor.py publica temperatura/umidade/fumaça como 3 mensagens MQTT
+# separadas por zona a cada ciclo. Avaliar o risco a cada mensagem individual
+# significa fazê-lo com leitura parcial (1 valor novo + 2 do ciclo anterior)
+# por uma fração de segundo — o suficiente pra cair fora da faixa crítica,
+# resetar risco_anterior e, na mensagem seguinte, disparar uma "reescalada"
+# falsa (alerta repetindo a cada ciclo em vez de respeitar o cooldown).
+# Por isso agrupamos as 3 mensagens do mesmo ciclo antes de avaliar.
+PROCESSAMENTO_DEBOUNCE_SEG = 0.3
+
+
+def agendar_avaliacao(client: mqtt.Client, estado: EstadoZona) -> None:
+    if estado.debounce_timer is not None:
+        estado.debounce_timer.cancel()
+    estado.debounce_timer = threading.Timer(PROCESSAMENTO_DEBOUNCE_SEG, processar_zona, args=(client, estado))
+    estado.debounce_timer.daemon = True
+    estado.debounce_timer.start()
+
+
 def processar_zona(client: mqtt.Client, estado: EstadoZona) -> None:
     """
     Avalia o risco de uma zona e, se necessário, consulta o satélite e publica
@@ -268,10 +365,15 @@ def processar_zona(client: mqtt.Client, estado: EstadoZona) -> None:
     agora = time.time()
     if agora - estado.ultimo_firms_ts >= FIRMS_COOLDOWN_SEG:
         estado.ultimo_firms_ts = agora
-        coords = ZONA_COORDS.get(estado.zona)
+        coords = coords_da_zona(estado.zona)
+        mockada = estado.zona == MOCK_ZONA and MOCK_LAT is not None and MOCK_LON is not None
         if coords:
-            log.info("Consultando NASA FIRMS para %s @ %.4f,%.4f …", estado.zona, *coords)
-            firms_resultado = consultar_firms(*coords)
+            if mockada:
+                log.warning("[MOCK] fabricando foco FIRMS para %s @ %.4f,%.4f", estado.zona, *coords)
+                firms_resultado = _resultado_firms_mock(*coords)
+            else:
+                log.info("Consultando NASA FIRMS para %s @ %.4f,%.4f …", estado.zona, *coords)
+                firms_resultado = consultar_firms(*coords)
             estado.ultimo_firms_resultado = firms_resultado
             estado.firms_confirmado = firms_resultado.get("confirmado", False)
             publicar_status_firms(client, estado.zona, firms_resultado)
@@ -343,7 +445,8 @@ def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
     if rc == 0:
         log.info("Conectado ao broker %s:%d", BROKER, PORT)
         client.subscribe(SUB_PATTERN, qos=0)
-        log.info("Subscrito em '%s'", SUB_PATTERN)
+        client.subscribe(MOCK_COMANDO_TOPIC, qos=1)
+        log.info("Subscrito em '%s' e '%s'", SUB_PATTERN, MOCK_COMANDO_TOPIC)
     else:
         log.error("Falha na conexão com broker; rc=%d", rc)
 
@@ -377,7 +480,7 @@ def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
     campo_map = {"temperatura": "temperatura", "umidade": "umidade", "fumaca": "fumaca"}
     if tipo in campo_map:
         zonas[zona].atualizar(campo_map[tipo], valor)
-        processar_zona(client, zonas[zona])
+        agendar_avaliacao(client, zonas[zona])
 
 
 def on_disconnect(client: mqtt.Client, userdata, rc: int) -> None:
@@ -400,6 +503,7 @@ def main() -> None:
     client.on_connect    = on_connect
     client.on_message    = on_message
     client.on_disconnect = on_disconnect
+    client.message_callback_add(MOCK_COMANDO_TOPIC, on_comando_mock)
 
     client.connect(BROKER, PORT, keepalive=60)
 

@@ -1,0 +1,10 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.git/
+front/
+to-do.md
+README.md
+*.log
