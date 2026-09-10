@@ -57,7 +57,7 @@ function Index() {
           <div className="hidden lg:flex items-center gap-2 font-mono text-[10px] text-faint tracking-[0.2em]">
             <span>POSTO DE VIGILÂNCIA</span>
             <span className="text-hair">/</span>
-            <span>OC 14 · SERROTE DO LESTE</span>
+            <span>GO · CHAPADA DOS VEADEIROS</span>
           </div>
           <div className="ml-auto flex items-center gap-4 sm:gap-5 font-mono text-[11px]">
             <div className="flex items-center gap-1.5">

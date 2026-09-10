@@ -4,7 +4,7 @@ atuador.py — Atuador IoT: recebe comandos do gateway e executa ações de resp
 Fluxo:
   gateway → MQTT (topico atuador) → atuador → executa ação (log, sirene, brigada)
 
-Tópicos subscritos:  minha-equipe/cidade-incendio/+/atuador/alerta
+Tópicos subscritos:  sentinela-iot-2026-joao-carol/chapada-veadeiros/+/atuador/alerta
 
 O atuador é o último elo da cadeia IoT: ao receber um pacote de alerta ele
 decide qual ação executar com base no nível de risco e em se o satélite NASA
@@ -123,7 +123,7 @@ def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
 
 def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
     """
-    Decodifica o tópico  minha-equipe/cidade-incendio/{zona}/atuador/alerta
+    Decodifica o tópico  sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/atuador/alerta
     e executa a ação correspondente ao campo 'acao' do payload JSON.
     """
     parts = msg.topic.split("/")

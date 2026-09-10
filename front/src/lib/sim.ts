@@ -53,12 +53,10 @@ export interface SimState {
 }
 
 const ZONE_DEFS = [
-  { id: "serra-leste", name: "SERRA DO LESTE", sensorId: "ZL-04", coords: "-22.817,-43.291", temp: 40, humidity: 14, smoke: 88 },
-  { id: "zona-norte", name: "ZONA NORTE", sensorId: "ZN-01", coords: "-22.790,-43.312", temp: 33, humidity: 19, smoke: 70 },
-  { id: "campo-sul", name: "CAMPO SUL", sensorId: "ZS-06", coords: "-22.858,-43.205", temp: 32, humidity: 21, smoke: 65 },
-  { id: "varzea-oeste", name: "VÁRZEA OESTE", sensorId: "ZO-02", coords: "-22.801,-43.355", temp: 28, humidity: 35, smoke: 46 },
-  { id: "mata-central", name: "MATA CENTRAL", sensorId: "ZC-03", coords: "-22.806,-43.276", temp: 24, humidity: 58, smoke: 9 },
-  { id: "riacho-noroeste", name: "RIACHO NOROESTE", sensorId: "RZ-05", coords: "-22.764,-43.340", temp: 26, humidity: 45, smoke: 20 },
+  { id: "alto-paraiso", name: "ALTO PARAÍSO", sensorId: "GO-AP-01", coords: "-14.133,-47.517", temp: 40, humidity: 14, smoke: 88 },
+  { id: "vila-sao-jorge", name: "VILA DE SÃO JORGE", sensorId: "GO-SJ-02", coords: "-14.1775,-47.814", temp: 33, humidity: 19, smoke: 70 },
+  { id: "cavalcante", name: "CAVALCANTE", sensorId: "GO-CV-03", coords: "-13.7975,-47.4583", temp: 32, humidity: 21, smoke: 65 },
+  { id: "colinas-do-sul", name: "COLINAS DO SUL", sensorId: "GO-CS-04", coords: "-14.1528,-48.076", temp: 28, humidity: 35, smoke: 46 },
 ];
 
 function evaluateRisk(smoke: number, humidity: number, temp: number): Risk {

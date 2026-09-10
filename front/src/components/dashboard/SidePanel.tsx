@@ -105,7 +105,7 @@ function MqttCommands({ zone }: { zone: Zone | undefined }) {
       <span className="font-mono text-[10px] tracking-[0.2em] text-faint">04 — COMANDOS MQTT</span>
       <div className="mt-3 rounded bg-ink/70 border border-hair px-2.5 py-2 font-mono text-[11px] break-all">
         <span className="text-teal">MQTT&gt;</span>{" "}
-        <span className="text-fg">minha-equipe/cidade-incendio/{target}/atuador/alerta</span>{" "}
+        <span className="text-fg">{zone?.topic.replace("/sensor/+", "/atuador/alerta")}</span>{" "}
         <span className="text-faint">{'{"risco":"critico","acao":"acionar_brigada"}'}</span>
       </div>
       <div className="mt-2 grid grid-cols-3 gap-2">

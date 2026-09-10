@@ -5,8 +5,8 @@ Fluxo:
   sensor → MQTT (topico sensor) → gateway → avalia risco → consulta FIRMS
                                            → publica alerta (topico atuador)
 
-Tópicos subscritos :  minha-equipe/cidade-incendio/+/sensor/+
-Tópicos publicados :  minha-equipe/cidade-incendio/{zona}/atuador/alerta
+Tópicos subscritos :  sentinela-iot-2026-joao-carol/chapada-veadeiros/+/sensor/+
+Tópicos publicados :  sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/atuador/alerta
 """
 
 import json
@@ -321,7 +321,7 @@ def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
 
 def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
     """
-    Decodifica o tópico  minha-equipe/cidade-incendio/{zona}/sensor/{tipo}
+    Decodifica o tópico  sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/sensor/{tipo}
     e atualiza o estado da zona correspondente.
     """
     parts = msg.topic.split("/")

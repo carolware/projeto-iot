@@ -55,12 +55,12 @@ O namespace MQTT adota hierarquia em quatro níveis para possibilitar subscriç�
 
 | Direção      | Padrão de Tópico                                                     | Descrição                          |
 |--------------|----------------------------------------------------------------------|------------------------------------|
-| Sensor → GW  | `minha-equipe/cidade-incendio/{zona}/sensor/temperatura`             | Leitura de temperatura (°C)        |
-| Sensor → GW  | `minha-equipe/cidade-incendio/{zona}/sensor/umidade`                 | Umidade relativa (%)               |
-| Sensor → GW  | `minha-equipe/cidade-incendio/{zona}/sensor/fumaca`                  | Concentração de fumaça (%)         |
-| GW → Atuador | `minha-equipe/cidade-incendio/{zona}/atuador/alerta`                 | Comando de alerta e ação           |
+| Sensor → GW  | `sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/sensor/temperatura`             | Leitura de temperatura (°C)        |
+| Sensor → GW  | `sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/sensor/umidade`                 | Umidade relativa (%)               |
+| Sensor → GW  | `sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/sensor/fumaca`                  | Concentração de fumaça (%)         |
+| GW → Atuador | `sentinela-iot-2026-joao-carol/chapada-veadeiros/{zona}/atuador/alerta`                 | Comando de alerta e ação           |
 
-O gateway subscreve o padrão `minha-equipe/cidade-incendio/+/sensor/+` (wildcard `+` = um nível), recebendo automaticamente todos os sensores de todas as zonas cadastradas.
+O gateway subscreve o padrão `sentinela-iot-2026-joao-carol/chapada-veadeiros/+/sensor/+` (wildcard `+` = um nível), recebendo automaticamente todos os sensores de todas as zonas cadastradas.
 
 ### 2.2 Diagrama de Sequência — Evento de Risco Crítico
 
@@ -148,7 +148,7 @@ Quando o risco é **alto ou crítico**, o gateway publica no tópico `atuador/al
 
 ```json
 {
-  "zona": "parque-central",
+  "zona": "alto-paraiso",
   "risco": "critico",
   "temperatura": 47.2,
   "umidade": 11.0,
@@ -178,7 +178,7 @@ Um mecanismo de **cooldown por zona × ação** (padrão: 30 s) previne o dispar
 
 Interface web desenvolvida com **React 19**, **TanStack Router/Start**, **Tailwind CSS v4** e componentes **Radix UI/Shadcn**. O frontend está integrado à plataforma **Lovable** para deploy contínuo.
 
-Na versão atual, o estado do sistema é simulado diretamente no navegador pelo módulo `sim.ts`, que replica fielmente o comportamento do gateway (passeio aleatório + motor de regras + eventos FIRMS simulados). Quando o backend estiver em produção, basta substituir o `tick()` interno por assinaturas MQTT reais via `mqtt.js` sobre WebSocket, mantendo os mesmos tipos e interfaces.
+O dashboard opera por padrão em modo real: o módulo `iot.ts` estabelece uma conexão MQTT sobre WebSocket seguro (WSS), subscreve os tópicos de telemetria e alerta e atualiza a interface imediatamente. O módulo `sim.ts` permanece disponível como modo de demonstração independente; para utilizá-lo, defina `VITE_DATA_MODE=sim` em `front/.env`.
 
 **Funcionalidades do dashboard:**
 - Visão geral de todas as zonas monitoradas com níveis de risco em tempo real
@@ -267,8 +267,10 @@ python sensor.py
 cd front
 npm install          # ou: bun install
 npm run dev
-# Acesse http://localhost:3000
+# Acesse o endereço indicado pelo Vite (neste projeto, normalmente http://localhost:8080)
 ```
+
+O frontend possui configuração própria em `front/.env`. O navegador não utiliza a porta MQTT TCP 1883; ele se conecta ao endpoint WSS definido por `VITE_MQTT_URL`. O valor de `VITE_MQTT_TOPIC_BASE` deve ser idêntico ao `MQTT_TOPIC_BASE` do `.env` localizado na raiz.
 
 ### 5.5 Variáveis de Ambiente
 
@@ -276,25 +278,27 @@ npm run dev
 |----------------------|---------------------|------------------------------------------|
 | `MQTT_BROKER`        | broker.hivemq.com   | Endereço do broker MQTT                  |
 | `MQTT_PORT`          | 1883                | Porta TCP do broker                      |
+| `MQTT_TOPIC_BASE`    | sentinela-iot-2026-joao-carol/chapada-veadeiros | Namespace isolado do projeto |
 | `FIRMS_MAP_KEY`      | —                   | **Obrigatório**: chave de acesso NASA FIRMS |
 | `FIRMS_SOURCE`       | VIIRS_SNPP_NRT      | Fonte de dados orbital                   |
 | `FIRMS_DAYS`         | 1                   | Janela temporal de busca (dias)          |
 | `FIRMS_RAIO_GRAUS`   | 0.15                | Raio de busca em graus (~16 km)          |
 | `FIRMS_COOLDOWN_SEG` | 60                  | Cooldown entre consultas FIRMS por zona  |
+| `ALERTA_COOLDOWN_SEG`| 30                  | Intervalo mínimo entre alertas da mesma zona |
 | `ACAO_COOLDOWN_SEG`  | 30                  | Cooldown entre ações repetidas (atuador) |
 
 ---
 
 ## 6. Mapeamento de Zonas
 
-As zonas monitoradas pelo sensor e gateway correspondem a áreas geográficas com coordenadas reais na região Sudeste do Brasil (área de referência: entorno de Petrópolis-RJ):
+As zonas monitoradas correspondem a localidades brasileiras reais na região da **Chapada dos Veadeiros, em Goiás**, área do bioma Cerrado sujeita a incêndios durante a estação seca:
 
 | Zona                  | Lat          | Lon          | Sensor ID |
 |-----------------------|-------------|-------------|-----------|
-| parque-central        | -22.8060    | -43.2760    | ZC-03     |
-| reserva-norte         | -22.7900    | -43.3120    | ZN-01     |
-| area-sul              | -22.8580    | -43.2050    | ZS-06     |
-| distrito-industrial   | -22.8170    | -43.2910    | ZL-04     |
+| Alto Paraíso de Goiás | -14.1330    | -47.5170    | GO-AP-01  |
+| Vila de São Jorge     | -14.1775    | -47.8140    | GO-SJ-02  |
+| Cavalcante            | -13.7975    | -47.4583    | GO-CV-03  |
+| Colinas do Sul        | -14.1528    | -48.0760    | GO-CS-04  |
 
 Para alterar as coordenadas, edite o dicionário `ZONA_COORDS` em `gateway.py`.
 
