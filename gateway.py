@@ -9,8 +9,11 @@ Tópicos subscritos :  sentinela-iot-2026-joao-carol/monitoramento-br/+/sensor/+
 Tópicos publicados :  sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/atuador/alerta
 """
 
+import csv
+import io
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -47,11 +50,15 @@ ALERTA_COOLDOWN_SEG = int(os.getenv("ALERTA_COOLDOWN_SEG", "30"))
 # ──────────────────────────────────────────────
 
 ZONA_COORDS: dict[str, tuple[float, float]] = {
-    "anapolis":       (-16.3267, -48.9530),  # Anápolis, GO
-    "formosa":        (-15.5372, -47.3372),  # Formosa, GO
-    "pirinopolis":    (-15.8558, -48.9597),  # Pirenópolis, GO
-    "sandolandia":    (-12.5408, -49.9192),  # Sandolândia, TO
-    "novo-progresso": ( -7.1261, -55.3853),  # Novo Progresso, PA (Amazônia)
+    "anapolis":          (-16.3267, -48.9530),  # Anápolis, GO
+    "formosa":           (-15.5372, -47.3372),  # Formosa, GO
+    "pirinopolis":       (-15.8558, -48.9597),  # Pirenópolis, GO
+    "jaragua":           (-15.7529, -49.3344),  # Jaraguá, GO
+    "sandolandia":       (-12.5408, -49.9192),  # Sandolândia, TO
+    "novo-progresso":    ( -7.1261, -55.3853),  # Novo Progresso, PA (Amazônia)
+    "mirador":           ( -6.3745, -44.3683),  # Mirador, MA — destaque MapBiomas 2025
+    "mateiros":          (-10.5464, -46.4168),  # Mateiros, TO — destaque MapBiomas 2025
+    "lagoa-da-confusao": (-10.7906, -49.6199),  # Lagoa da Confusão, TO — destaque MapBiomas 2025
 }
 
 # ──────────────────────────────────────────────
@@ -134,32 +141,46 @@ zonas: dict[str, EstadoZona] = {z: EstadoZona(z) for z in ZONA_COORDS}
 # Integração NASA FIRMS
 # ──────────────────────────────────────────────
 
+def _distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    raio_terra = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+    return raio_terra * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _resultado_firms_vazio(erro: str | None = None) -> dict:
+    resultado = {
+        "focos": 0,
+        "confirmado": False,
+        "frp_max": 0,
+        "distancia_km": None,
+        "raio_km": round(FIRMS_RAIO * 111, 1),
+        "janela_horas": FIRMS_DAYS * 24,
+        "atualizado_em": datetime.now(timezone.utc).isoformat(),
+        "hotspots": [],
+    }
+    if erro:
+        resultado["erro"] = erro
+    return resultado
+
+
 def consultar_firms(lat: float, lon: float) -> dict:
-    """
-    Consulta a API NASA FIRMS (Fire Information for Resource Management System)
-    para detectar focos de calor ativos numa caixa delimitadora ao redor da
-    coordenada fornecida.
-
-    Endpoint utilizado:
-      https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/{source}/{bbox}/{days}
-
-    Parâmetros do bbox: west,south,east,north (em graus decimais)
-
-    Retorna um dicionário com:
-      focos        — número de registros VIIRS/MODIS na área
-      confirmado   — True se houver pelo menos 1 foco
-      frp_max      — Fire Radiative Power máximo (W/m²), 0 se nenhum foco
-      distancia_km — menor distância estimada ao sensor (aproximação euclidiana)
-    """
+    """Retorna os focos FIRMS e seus metadados geográficos na área da zona."""
     if not FIRMS_KEY:
         log.warning("FIRMS_MAP_KEY não configurada; pulando consulta satélite.")
-        return {"focos": 0, "confirmado": False, "frp_max": 0, "distancia_km": None}
+        return _resultado_firms_vazio("FIRMS_MAP_KEY não configurada")
 
-    west  = round(lon - FIRMS_RAIO, 4)
-    east  = round(lon + FIRMS_RAIO, 4)
+    west = round(lon - FIRMS_RAIO, 4)
+    east = round(lon + FIRMS_RAIO, 4)
     south = round(lat - FIRMS_RAIO, 4)
     north = round(lat + FIRMS_RAIO, 4)
-    url   = (
+    url = (
         f"https://firms.modaps.eosdis.nasa.gov/api/area/csv"
         f"/{FIRMS_KEY}/{FIRMS_SOURCE}/{west},{south},{east},{north}/{FIRMS_DAYS}"
     )
@@ -169,49 +190,55 @@ def consultar_firms(lat: float, lon: float) -> dict:
         resp.raise_for_status()
     except requests.RequestException as exc:
         log.error("Falha na consulta FIRMS: %s", exc)
-        return {"focos": 0, "confirmado": False, "frp_max": 0, "distancia_km": None, "erro": str(exc)}
+        return _resultado_firms_vazio(str(exc))
 
-    linhas = [l for l in resp.text.strip().splitlines() if l and not l.startswith("latitude")]
-
-    if not linhas:
-        return {"focos": 0, "confirmado": False, "frp_max": 0, "distancia_km": None}
-
-    # Parse CSV básico para extrair FRP (Fire Radiative Power)
-    frp_max     = 0.0
-    dist_min_km = None
-    header      = resp.text.strip().splitlines()[0].lower().split(",")
-
+    hotspots: list[dict] = []
     try:
-        idx_lat = header.index("latitude")
-        idx_lon = header.index("longitude")
-        idx_frp = header.index("frp") if "frp" in header else None
-    except ValueError:
-        idx_lat = idx_lon = idx_frp = None
-
-    for linha in linhas:
-        cols = linha.split(",")
-        if idx_frp is not None and len(cols) > idx_frp:
+        registros = csv.DictReader(io.StringIO(resp.text))
+        for indice, registro in enumerate(registros):
             try:
-                frp = float(cols[idx_frp])
-                frp_max = max(frp_max, frp)
-            except ValueError:
-                pass
-        if idx_lat is not None and idx_lon is not None and len(cols) > max(idx_lat, idx_lon):
-            try:
-                flat = float(cols[idx_lat])
-                flon = float(cols[idx_lon])
-                # distância euclidiana aproximada em km (1° ≈ 111 km)
-                dist = ((flat - lat) ** 2 + (flon - lon) ** 2) ** 0.5 * 111
-                dist_min_km = round(dist, 2) if dist_min_km is None else min(dist_min_km, round(dist, 2))
-            except ValueError:
-                pass
+                flat = float(registro["latitude"])
+                flon = float(registro["longitude"])
+                frp = float(registro.get("frp") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
 
-    return {
-        "focos":        len(linhas),
-        "confirmado":   True,
-        "frp_max":      round(frp_max, 1),
-        "distancia_km": dist_min_km,
-    }
+            data = registro.get("acq_date", "")
+            hora = (registro.get("acq_time") or "").zfill(4)
+            adquirido_em = f"{data}T{hora[:2]}:{hora[2:]}:00Z" if data and hora else None
+            distancia = round(_distancia_km(lat, lon, flat, flon), 2)
+            hotspots.append({
+                "id": f"{registro.get('satellite', 'sat')}-{data}-{hora}-{indice}",
+                "latitude": round(flat, 5),
+                "longitude": round(flon, 5),
+                "frp": round(frp, 1),
+                "confidence": registro.get("confidence") or "n/d",
+                "satellite": registro.get("satellite") or "n/d",
+                "instrument": registro.get("instrument") or "n/d",
+                "acquired_at": adquirido_em,
+                "daynight": registro.get("daynight") or "n/d",
+                "distance_km": distancia,
+            })
+    except csv.Error as exc:
+        log.error("CSV FIRMS inválido: %s", exc)
+        return _resultado_firms_vazio(str(exc))
+
+    hotspots.sort(key=lambda foco: foco["frp"], reverse=True)
+    resultado = _resultado_firms_vazio()
+    resultado.update({
+        "focos": len(hotspots),
+        "confirmado": bool(hotspots),
+        "frp_max": max((foco["frp"] for foco in hotspots), default=0),
+        "distancia_km": min((foco["distance_km"] for foco in hotspots), default=None),
+        "hotspots": hotspots[:100],
+    })
+    return resultado
+
+
+def publicar_status_firms(client: mqtt.Client, zona: str, resultado: dict) -> None:
+    payload = {"zona": zona, **resultado}
+    topic = f"{TOPIC_BASE}/{zona}/satelite/firms"
+    client.publish(topic, json.dumps(payload), qos=1, retain=True)
 
 
 # ──────────────────────────────────────────────
@@ -235,28 +262,28 @@ def processar_zona(client: mqtt.Client, estado: EstadoZona) -> None:
         estado.zona, temp, umid, fumaca, risco.upper(),
     )
 
-    # ── Verificação via satélite (se risco ≥ médio e cooldown expirado) ──
+    # ── Varredura orbital periódica para todas as zonas ──
     firms_resultado: dict = {}
-    if risco in ("medio", "alto", "critico"):
-        agora = time.time()
-        if agora - estado.ultimo_firms_ts >= FIRMS_COOLDOWN_SEG:
-            estado.ultimo_firms_ts = agora
-            coords = ZONA_COORDS.get(estado.zona)
-            if coords:
-                log.info("Consultando NASA FIRMS para %s @ %.4f,%.4f …", estado.zona, *coords)
-                firms_resultado = consultar_firms(*coords)
-                estado.ultimo_firms_resultado = firms_resultado
-                estado.firms_confirmado = firms_resultado.get("confirmado", False)
-                if estado.firms_confirmado:
-                    log.warning(
-                        "FIRMS confirmou %d foco(s) perto de %s (FRP=%.0f W/m², dist=%.1f km)",
-                        firms_resultado["focos"],
-                        estado.zona,
-                        firms_resultado.get("frp_max", 0),
-                        firms_resultado.get("distancia_km") or 0,
-                    )
-                else:
-                    log.info("FIRMS: nenhum foco ativo perto de %s.", estado.zona)
+    agora = time.time()
+    if agora - estado.ultimo_firms_ts >= FIRMS_COOLDOWN_SEG:
+        estado.ultimo_firms_ts = agora
+        coords = ZONA_COORDS.get(estado.zona)
+        if coords:
+            log.info("Consultando NASA FIRMS para %s @ %.4f,%.4f …", estado.zona, *coords)
+            firms_resultado = consultar_firms(*coords)
+            estado.ultimo_firms_resultado = firms_resultado
+            estado.firms_confirmado = firms_resultado.get("confirmado", False)
+            publicar_status_firms(client, estado.zona, firms_resultado)
+            if estado.firms_confirmado:
+                log.warning(
+                    "FIRMS confirmou %d foco(s) perto de %s (FRP=%.0f MW, dist=%.1f km)",
+                    firms_resultado["focos"],
+                    estado.zona,
+                    firms_resultado.get("frp_max", 0),
+                    firms_resultado.get("distancia_km") or 0,
+                )
+            else:
+                log.info("FIRMS: nenhum foco ativo perto de %s.", estado.zona)
 
     # ── Publicar uma vez na escalada e repetir somente após o cooldown ──
     agora = time.time()

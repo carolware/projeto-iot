@@ -54,11 +54,15 @@ REFRESH_FIRMS_MIN = int(os.getenv("SENSOR_REFRESH_FIRMS_MIN", "30"))
 # ──────────────────────────────────────────────
 
 ZONA_COORDS: dict[str, tuple[float, float]] = {
-    "anapolis":       (-16.3267, -48.9530),  # Anápolis, GO
-    "formosa":        (-15.5372, -47.3372),  # Formosa, GO
-    "pirinopolis":    (-15.8558, -48.9597),  # Pirenópolis, GO
-    "sandolandia":    (-12.5408, -49.9192),  # Sandolândia, TO
-    "novo-progresso": ( -7.1261, -55.3853),  # Novo Progresso, PA
+    "anapolis":          (-16.3267, -48.9530),  # Anápolis, GO
+    "formosa":           (-15.5372, -47.3372),  # Formosa, GO
+    "pirinopolis":       (-15.8558, -48.9597),  # Pirenópolis, GO
+    "jaragua":           (-15.7529, -49.3344),  # Jaraguá, GO
+    "sandolandia":       (-12.5408, -49.9192),  # Sandolândia, TO
+    "novo-progresso":    ( -7.1261, -55.3853),  # Novo Progresso, PA
+    "mirador":           ( -6.3745, -44.3683),  # Mirador, MA
+    "mateiros":          (-10.5464, -46.4168),  # Mateiros, TO
+    "lagoa-da-confusao": (-10.7906, -49.6199),  # Lagoa da Confusão, TO
 }
 
 ZONAS = list(ZONA_COORDS.keys())
@@ -80,11 +84,8 @@ log = logging.getLogger("sensor")
 
 # Valores atuais (inicializados com fallback até a 1ª consulta real)
 _FALLBACK: dict[str, dict] = {
-    "anapolis":       {"temperatura": 34.0, "umidade": 40.0, "fumaca": 5.0},
-    "formosa":        {"temperatura": 33.0, "umidade": 42.0, "fumaca": 5.0},
-    "pirinopolis":    {"temperatura": 35.0, "umidade": 37.0, "fumaca": 6.0},
-    "sandolandia":    {"temperatura": 38.0, "umidade": 22.0, "fumaca": 10.0},
-    "novo-progresso": {"temperatura": 37.0, "umidade": 28.0, "fumaca": 12.0},
+    zona: {"temperatura": 30.0, "umidade": 45.0, "fumaca": 5.0}
+    for zona in ZONAS
 }
 
 estado: dict[str, dict] = {z: dict(v) for z, v in _FALLBACK.items()}

@@ -16,7 +16,7 @@ O Brasil possui aproximadamente 12% da superfície terrestre coberta por biomas 
 
 No contexto da disciplina de Internet das Coisas, o presente trabalho propõe uma abordagem baseada em quatro princípios:
 
-1. **Heterogeneidade de fontes**: fusão de dados de sensores locais (temperatura, umidade relativa e concentração de fumaça) com dados orbitais de satélites.
+1. **Heterogeneidade de fontes**: fusão de estimativas meteorológicas atuais (temperatura e umidade relativa) com detecções orbitais de focos de calor e um índice qualitativo derivado de fumaça.
 2. **Processamento na borda** (*edge computing*): a lógica de inferência de risco é executada no gateway, sem dependência de nuvem para decisões de latência crítica.
 3. **Comunicação assíncrona orientada a eventos**: o protocolo MQTT (Message Queuing Telemetry Transport) garante entrega confiável com overhead mínimo de protocolo.
 4. **Atuação automatizada**: comandos de resposta são emitidos pelo gateway e recebidos pelo atuador, fechando o laço de controle sem intervenção humana obrigatória.
@@ -45,11 +45,32 @@ No contexto da disciplina de Internet das Coisas, o presente trabalho propõe um
 │  ATUAÇÃO        │  (brigada, monitoramento, silenciar)               │
 ├─────────────────┼───────────────────────────────────────────────────┤
 │  CAMADA         │  Dashboard SENTINELA (React/TanStack)              │
-│  VISUALIZAÇÃO   │  Exibição em tempo real no Lovable                 │
+│  VISUALIZAÇÃO   │  React/TanStack local ou deploy web compatível     │
 └─────────────────┴───────────────────────────────────────────────────┘
 ```
 
-### 2.1 Topologia de Tópicos MQTT
+### 2.1 Tecnologias Utilizadas e Responsabilidades
+
+| Tecnologia | Camada | Utilização no projeto |
+|------------|--------|-----------------------|
+| **Python 3** | Backend/edge | Implementa o coletor de telemetria, o gateway e o atuador. |
+| **requests** | Integração HTTP | Consulta os endpoints REST da Open-Meteo e da NASA FIRMS. |
+| **python-dotenv** | Configuração | Carrega broker, namespace MQTT, chave FIRMS, raios e intervalos a partir do `.env`. |
+| **paho-mqtt** | Mensageria backend | Publica e consome mensagens MQTT sobre TCP na porta 1883. |
+| **Open-Meteo** | Fonte externa | Fornece temperatura e umidade atuais estimadas para as coordenadas monitoradas, sem exigir chave. |
+| **NASA FIRMS / VIIRS** | Fonte orbital | Fornece focos de calor, coordenadas e FRP em tempo quase real; não mede diretamente fumaça ou temperatura do ar. |
+| **HiveMQ Public Broker** | Infraestrutura MQTT | Intermedeia a comunicação publish/subscribe da demonstração. Por ser público, não é indicado para produção. |
+| **React 19 + TypeScript** | Interface | Implementa os componentes reativos e a tipagem do dashboard. |
+| **TanStack Start/Router** | Aplicação web | Estrutura rotas, renderização no servidor (SSR), hidratação e build da aplicação. |
+| **Vite 8** | Ferramentas frontend | Executa o servidor de desenvolvimento e gera os bundles de produção. |
+| **Tailwind CSS 4** | Apresentação | Define layout responsivo, cores, tipografia e estados visuais. |
+| **mqtt.js** | Mensageria no navegador | Conecta o dashboard ao HiveMQ por MQTT sobre WebSocket seguro (`wss://...:8884/mqtt`). |
+| **Leaflet + React-Leaflet 5** | Geovisualização | Renderiza o mapa interativo, marcadores, popups, zoom e modo expandido. |
+| **OpenStreetMap + CARTO** | Cartografia | Fornecem os tiles e a base geográfica exibida pelo Leaflet. |
+| **Radix UI** | Componentes auxiliares | Disponibiliza primitivas acessíveis instaladas no frontend; o dashboard atual utiliza principalmente componentes próprios. |
+| **Lovable config** | Compatibilidade de projeto | Mantém a configuração de origem do frontend; a aplicação também funciona localmente sem depender da plataforma. |
+
+### 2.2 Topologia de Tópicos MQTT
 
 O namespace MQTT adota hierarquia em quatro níveis para possibilitar subscrições seletivas com wildcards:
 
@@ -57,12 +78,12 @@ O namespace MQTT adota hierarquia em quatro níveis para possibilitar subscriç�
 |--------------|----------------------------------------------------------------------|------------------------------------|
 | Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/temperatura`             | Leitura de temperatura (°C)        |
 | Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/umidade`                 | Umidade relativa (%)               |
-| Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/fumaca`                  | Concentração de fumaça (%)         |
+| Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/fumaca`                  | Índice estimado de fumaça (0–100)  |
 | GW → Atuador | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/atuador/alerta`                 | Comando de alerta e ação           |
 
 O gateway subscreve o padrão `sentinela-iot-2026-joao-carol/monitoramento-br/+/sensor/+` (wildcard `+` = um nível), recebendo automaticamente todos os sensores de todas as zonas cadastradas.
 
-### 2.2 Diagrama de Sequência — Evento de Risco Crítico
+### 2.3 Diagrama de Sequência — Evento de Risco Crítico
 
 ```
 Sensor          Broker MQTT        Gateway         NASA FIRMS       Atuador
@@ -119,13 +140,13 @@ Mantém um objeto `EstadoZona` thread-safe por zona, acumulando as três leitura
 A função `avaliar_risco(fumaca, umidade, temperatura)` implementa um conjunto de regras baseado em limiares físicos empiricamente estabelecidos:
 
 ```
-SE  fumaca ≥ 85%  E  umidade < 15%            → CRÍTICO
-SE  fumaca ≥ 60%  E  umidade < 25%            → ALTO
-SE  fumaca ≥ 40%  OU umidade < 35%  OU temp > 33°C → MÉDIO
+SE  indice_fumaca ≥ 85  E  umidade < 15%            → CRÍTICO
+SE  indice_fumaca ≥ 60  E  umidade < 25%            → ALTO
+SE  indice_fumaca ≥ 40  OU umidade < 35%  OU temp > 33°C → MÉDIO
 SENÃO                                          → BAIXO
 ```
 
-A combinação fumaça alta + umidade baixa é o indicador mais confiável de combustão ativa: a fumaça indica material particulado em suspensão (sub-produto da oxidação) enquanto a umidade baixa indica ausência de vapor d'água — condição que favorece a propagação das chamas e reduz a capacidade de autoextinção da vegetação.
+Neste protótipo acadêmico, a combinação entre índice elevado e baixa umidade aumenta o nível de risco. Trata-se de uma heurística determinística para demonstração do processamento de borda, não de um modelo físico validado nem de diagnóstico conclusivo de incêndio.
 
 #### 3.2.3 Integração NASA FIRMS
 
@@ -140,14 +161,14 @@ GET https://firms.modaps.eosdis.nasa.gov/api/area/csv
 
 O CSV retornado contém campos `latitude`, `longitude`, `brightness`, `frp` (Fire Radiative Power, em MW), `confidence` e outros. O gateway extrai:
 - **Número de focos** na área
-- **FRP máximo** (W/m²) — proxy da intensidade do incêndio
+- **FRP máximo** (MW) — potência radiativa do fogo e proxy de sua intensidade
 - **Distância mínima** ao sensor (cálculo euclidiano em graus, convertido para km com fator 111 km/°)
 
 Um mecanismo de **cooldown** (padrão: 60 s) evita requisições excessivas à API para a mesma zona.
 
 #### 3.2.4 Publicação de Alertas
 
-Quando o risco é **alto ou crítico**, o gateway publica no tópico `atuador/alerta` da zona um payload JSON completo com todos os dados do evento:
+Quando o risco é **alto ou crítico**, o gateway publica no tópico `atuador/alerta` da zona um payload JSON completo com todos os dados do evento. Na implementação atual, o resultado FIRMS enriquece o alerta por meio de `firms_confirmado`, mas a ausência de foco orbital não bloqueia sua publicação; isso preserva a resposta a indícios locais e considera a latência e as limitações de cobertura do satélite:
 
 ```json
 {
@@ -179,7 +200,7 @@ Um mecanismo de **cooldown por zona × ação** (padrão: 30 s) previne o dispar
 
 ### 3.4 Dashboard SENTINELA (Frontend)
 
-Interface web desenvolvida com **React 19**, **TanStack Router/Start**, **Tailwind CSS v4** e componentes **Radix UI/Shadcn**. O frontend está integrado à plataforma **Lovable** para deploy contínuo.
+Interface web desenvolvida com **React 19**, **TypeScript**, **TanStack Router/Start**, **Vite 8** e **Tailwind CSS v4**. A geovisualização utiliza **Leaflet/React-Leaflet 5**, e a integração em tempo real usa **mqtt.js** sobre WebSocket seguro. O projeto preserva configuração compatível com Lovable, mas pode ser executado e implantado independentemente da plataforma.
 
 O dashboard opera por padrão em modo real: o módulo `iot.ts` estabelece uma conexão MQTT sobre WebSocket seguro (WSS), subscreve os tópicos de telemetria e alerta e atualiza a interface imediatamente. O módulo `sim.ts` permanece disponível como modo de demonstração independente; para utilizá-lo, defina `VITE_DATA_MODE=sim` em `front/.env`.
 
@@ -206,7 +227,7 @@ MQTT (*Message Queuing Telemetry Transport*) é um protocolo de mensageria publi
 | Broker        | broker.hivemq.com | Broker público gratuito para prototipagem|
 | Porta         | 1883              | TCP sem TLS (ambiente de desenvolvimento)|
 | QoS (sensor)  | 0 (at most once)  | Dados de telemetria — perda ocasional aceitável |
-| QoS (alerta)  | 1 (at least once) | Comandos críticos — confirmação necessária |
+| QoS (alerta)  | 1 (at least once) | Broker confirma o recebimento; pode haver duplicação |
 | Keep-alive    | 60 s              | Detecção de desconexão dentro de 1 minuto |
 
 ### 4.2 API NASA FIRMS
@@ -260,7 +281,7 @@ python atuador.py
 # Terminal 2 — Gateway (motor de regras + FIRMS)
 python gateway.py
 
-# Terminal 3 — Sensor (gerador de dados)
+# Terminal 3 — Coletor de dados Open-Meteo/FIRMS
 python sensor.py
 ```
 
@@ -359,9 +380,8 @@ Como “Amazônia” é uma região extensa, Novo Progresso (PA) foi adotada com
 - **Banco de dados de séries temporais**: integrar InfluxDB ou TimescaleDB para persistência e análise histórica das leituras.
 - **Geofencing dinâmico**: permitir configuração de zonas e coordenadas via API REST sem necessidade de redeploy.
 - **Machine Learning**: substituir o motor de regras estático por modelo de classificação treinado com dados históricos INPE/FIRMS.
-- **Hardware real**: migrar do sensor simulado para microcontroladores com sensores MQ-2 (fumaça), DHT22 (temperatura/umidade) via ESP32 com firmware MicroPython.
+- **Hardware de campo**: substituir ou complementar as fontes remotas com ESP32, sensor MQ-2/PM2.5 para fumaça e DHT22 para temperatura/umidade, usando firmware MicroPython e obtendo medições ambientais locais.
 - **Integração com Defesa Civil**: webhook para notificação automática de órgãos públicos em caso de risco crítico confirmado.
-- **Sensor físico de fumaça**: substituir o proxy FIRMS por sensores locais MQ-2/PM2.5 para obter concentração atmosférica realmente medida.
 
 ---
 
@@ -377,7 +397,7 @@ projeto-iot/
 ├── .env                # Configuração local (não versionado)
 ├── .gitignore
 ├── README.md           # Este documento
-└── front/              # Dashboard SENTINELA (React/TanStack/Lovable)
+└── front/              # Dashboard SENTINELA (React/TanStack/Vite)
     ├── src/
     │   ├── routes/
     │   │   └── index.tsx       # Página principal do dashboard

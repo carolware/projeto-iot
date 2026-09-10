@@ -10,20 +10,24 @@
  */
 import { useSyncExternalStore } from "react";
 import type { MqttClient } from "mqtt";   // import de tipo: apagado no build, seguro no SSR
-import { sendCommand as sendSimCommand, useSim, type FeedEvent, type Risk, type SimState, type Zone } from "./sim";
+import { sendCommand as sendSimCommand, useSim, type FeedEvent, type FirmsHotspot, type Risk, type SimState, type Zone } from "./sim";
 
-export type { FeedEvent, Risk, SimState, Zone } from "./sim";
+export type { FeedEvent, FirmsHotspot, Risk, SimState, Zone } from "./sim";
 
 const DATA_MODE = import.meta.env.VITE_DATA_MODE ?? "mqtt";
 const MQTT_URL  = import.meta.env.VITE_MQTT_URL  ?? "wss://broker.hivemq.com:8884/mqtt";
 const TOPIC_BASE = import.meta.env.VITE_MQTT_TOPIC_BASE ?? "sentinela-iot-2026-joao-carol/monitoramento-br";
 
 const ZONE_DEFS = [
-  { id: "anapolis",       name: "ANÁPOLIS",      sensorId: "GO-AN-01", coords: "-16.3267,-48.9530" },
-  { id: "formosa",        name: "FORMOSA",        sensorId: "GO-FO-02", coords: "-15.5372,-47.3372" },
-  { id: "pirinopolis",    name: "PIRENÓPOLIS",    sensorId: "GO-PI-03", coords: "-15.8558,-48.9597" },
-  { id: "sandolandia",    name: "SANDOLÂNDIA",    sensorId: "TO-SA-04", coords: "-12.5408,-49.9192" },
-  { id: "novo-progresso", name: "NOVO PROGRESSO", sensorId: "PA-NP-05", coords: "-7.1261,-55.3853"  },
+  { id: "anapolis",          name: "ANÁPOLIS",          sensorId: "GO-AN-01", coords: "-16.3267,-48.9530" },
+  { id: "formosa",           name: "FORMOSA",            sensorId: "GO-FO-02", coords: "-15.5372,-47.3372" },
+  { id: "pirinopolis",       name: "PIRENÓPOLIS",        sensorId: "GO-PI-03", coords: "-15.8558,-48.9597" },
+  { id: "jaragua",           name: "JARAGUÁ",            sensorId: "GO-JA-04", coords: "-15.7529,-49.3344" },
+  { id: "sandolandia",       name: "SANDOLÂNDIA",        sensorId: "TO-SA-05", coords: "-12.5408,-49.9192" },
+  { id: "novo-progresso",    name: "NOVO PROGRESSO",     sensorId: "PA-NP-06", coords: "-7.1261,-55.3853"  },
+  { id: "mirador",           name: "MIRADOR",            sensorId: "MA-MI-07", coords: "-6.3745,-44.3683"  },
+  { id: "mateiros",          name: "MATEIROS",           sensorId: "TO-MA-08", coords: "-10.5464,-46.4168" },
+  { id: "lagoa-da-confusao", name: "LAGOA DA CONFUSÃO", sensorId: "TO-LC-09", coords: "-10.7906,-49.6199" },
 ];
 
 function now() {
@@ -57,6 +61,10 @@ function initZones(): Zone[] {
     risk: "offline" as Risk,
     firmsConfirmed: false,
     firmsConf: 0,
+    firmsHotspots: [],
+    firmsUpdatedAt: null,
+    firmsRadiusKm: 16.7,
+    firmsWindowHours: 24,
     smokeHistory: Array(7).fill(0),
     lastPingSec: 0,
   }));
@@ -148,6 +156,48 @@ function updateAlert(zoneId: string, payload: Record<string, unknown>) {
   emit();
 }
 
+function updateFirms(zoneId: string, payload: Record<string, unknown>) {
+  const rawHotspots = Array.isArray(payload.hotspots) ? payload.hotspots : [];
+  const hotspots: FirmsHotspot[] = rawHotspots.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const raw = item as Record<string, unknown>;
+    const latitude = Number(raw.latitude);
+    const longitude = Number(raw.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+    return [{
+      id: String(raw.id ?? `${latitude}-${longitude}`),
+      latitude,
+      longitude,
+      frp: Number(raw.frp) || 0,
+      confidence: String(raw.confidence ?? "n/d"),
+      satellite: String(raw.satellite ?? "n/d"),
+      instrument: String(raw.instrument ?? "n/d"),
+      acquiredAt: raw.acquired_at ? String(raw.acquired_at) : null,
+      daynight: String(raw.daynight ?? "n/d"),
+      distanceKm: Number(raw.distance_km) || 0,
+    }];
+  });
+  const zones = mqttState.zones.map((zone) => zone.id === zoneId ? {
+    ...zone,
+    firmsConfirmed: Boolean(payload.confirmado),
+    firmsConf: hotspots.length,
+    firmsHotspots: hotspots,
+    firmsUpdatedAt: payload.atualizado_em ? String(payload.atualizado_em) : null,
+    firmsRadiusKm: Number(payload.raio_km) || zone.firmsRadiusKm,
+    firmsWindowHours: Number(payload.janela_horas) || 24,
+  } : zone);
+  mqttState = { ...mqttState, zones };
+  addEvent(
+    evt(
+      "satelite",
+      hotspots.length ? `FIRMS · ${hotspots.length} foco(s)` : "FIRMS · nenhum foco",
+      `${zoneId} · janela ${Number(payload.janela_horas) || 24}h · FRP máx ${Number(payload.frp_max) || 0} MW`,
+    ),
+    hotspots.length ? `[ SAT] ${zoneId} → ${hotspots.length} foco(s)` : `[ SAT] ${zoneId} → área sem foco`,
+  );
+  emit();
+}
+
 function handleMessage(topic: string, raw: Uint8Array) {
   const parts = topic.split("/");
   if (parts.length < 5 || !topic.startsWith(`${TOPIC_BASE}/`)) return;
@@ -159,6 +209,8 @@ function handleMessage(topic: string, raw: Uint8Array) {
       if (Number.isFinite(value)) updateTelemetry(zoneId, parts.at(-1)!, value);
     } else if (parts.at(-2) === "atuador" && parts.at(-1) === "alerta") {
       updateAlert(zoneId, payload);
+    } else if (parts.at(-2) === "satelite" && parts.at(-1) === "firms") {
+      updateFirms(zoneId, payload);
     }
   } catch {
     addEvent(evt("sistema", "MQTT · payload inválido", topic), `[ ! ] payload inválido → ${topic}`);
@@ -185,7 +237,11 @@ function initializeMqtt() {
 
       mqttClient.on("connect", () => {
         mqttClient!.subscribe(
-          [`${TOPIC_BASE}/+/sensor/+`, `${TOPIC_BASE}/+/atuador/alerta`],
+          [
+            `${TOPIC_BASE}/+/sensor/+`,
+            `${TOPIC_BASE}/+/atuador/alerta`,
+            `${TOPIC_BASE}/+/satelite/firms`,
+          ],
           { qos: 0 },
         );
         mqttState = { ...mqttState, mqttConnected: true };

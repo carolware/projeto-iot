@@ -50,13 +50,36 @@ function RiskLegend() {
           <span className="font-mono text-[9px] text-faint uppercase">{RISK_LABEL[r]}</span>
         </div>
       ))}
+      <div className="flex items-center gap-1">
+        <span className="size-2 rounded-full inline-block border border-white" style={{ background: "#f97316" }} />
+        <span className="font-mono text-[9px] text-faint uppercase">FOCO FIRMS</span>
+      </div>
+    </div>
+  );
+}
+
+function TimeFilter({ value, onChange }: { value: number; onChange: (hours: number) => void }) {
+  return (
+    <div className="flex items-center gap-1 font-mono text-[9px]">
+      <span className="text-faint mr-1">JANELA</span>
+      {[6, 12, 24].map((hours) => (
+        <button
+          key={hours}
+          type="button"
+          className={`rounded border px-1.5 py-0.5 transition-colors ${value === hours ? "border-teal bg-teal/15 text-teal" : "border-hair text-faint hover:text-fg"}`}
+          onClick={() => onChange(hours)}
+        >
+          {hours}H
+        </button>
+      ))}
     </div>
   );
 }
 
 export function FireMap({ zones }: { zones: Zone[] }) {
-  const [mounted,  setMounted]  = useState(false);
+  const [mounted, setMounted] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [windowHours, setWindowHours] = useState(24);
 
   // Só executa no browser — garante que o Leaflet não é renderizado no servidor
   useEffect(() => { setMounted(true); }, []);
@@ -75,7 +98,7 @@ export function FireMap({ zones }: { zones: Zone[] }) {
       {/* ── Mapa pequeno (sidebar) ── */}
       <div className="relative w-full rounded border border-hair overflow-hidden aspect-[4/3]">
         <Suspense fallback={<MapPlaceholder />}>
-          <LeafletMapCore zones={zones} zoom={5} interactive />
+          <LeafletMapCore zones={zones} zoom={4} interactive windowHours={windowHours} />
         </Suspense>
 
         <button
@@ -98,7 +121,10 @@ export function FireMap({ zones }: { zones: Zone[] }) {
         </a>
       </div>
 
-      <RiskLegend />
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <RiskLegend />
+        <TimeFilter value={windowHours} onChange={setWindowHours} />
+      </div>
 
       {/* ── Modal expandido (tela cheia) ── */}
       {expanded && createPortal(
@@ -113,10 +139,11 @@ export function FireMap({ zones }: { zones: Zone[] }) {
                 MAPA DE RISCO — SENTINELA IoT
               </span>
               <span className="font-mono text-[9px] text-faint">
-                Goiás · Tocantins · Amazônia (PA)
+                GO · TO · PA · MA · focos reais NASA FIRMS
               </span>
             </div>
             <div className="flex items-center gap-5 flex-wrap justify-end">
+              <TimeFilter value={windowHours} onChange={setWindowHours} />
               <div className="flex items-center gap-3">
                 {(["baixo", "medio", "alto", "critico"] as const).map((r) => (
                   <div key={r} className="flex items-center gap-1.5">
@@ -146,7 +173,7 @@ export function FireMap({ zones }: { zones: Zone[] }) {
           {/* Mapa interativo em tela cheia */}
           <div className="flex-1" onClick={(e) => e.stopPropagation()}>
             <Suspense fallback={<div className="w-full h-full flex items-center justify-center"><span className="text-faint font-mono text-sm">carregando...</span></div>}>
-              <LeafletMapCore zones={zones} zoom={6} interactive />
+              <LeafletMapCore zones={zones} zoom={5} interactive windowHours={windowHours} />
             </Suspense>
           </div>
         </div>,

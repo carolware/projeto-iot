@@ -12,6 +12,19 @@ import { useSyncExternalStore } from "react";
 
 export type Risk = "baixo" | "medio" | "alto" | "critico" | "offline";
 
+export interface FirmsHotspot {
+  id: string;
+  latitude: number;
+  longitude: number;
+  frp: number;
+  confidence: string;
+  satellite: string;
+  instrument: string;
+  acquiredAt: string | null;
+  daynight: string;
+  distanceKm: number;
+}
+
 export interface Zone {
   id: string;
   name: string;
@@ -28,6 +41,10 @@ export interface Zone {
   risk: Risk;
   firmsConfirmed: boolean;
   firmsConf: number;
+  firmsHotspots: FirmsHotspot[];
+  firmsUpdatedAt: string | null;
+  firmsRadiusKm: number;
+  firmsWindowHours: number;
   smokeHistory: number[];
   lastPingSec: number;
 }
@@ -53,11 +70,15 @@ export interface SimState {
 }
 
 const ZONE_DEFS = [
-  { id: "anapolis",       name: "ANÁPOLIS",      sensorId: "GO-AN-01", coords: "-16.3267,-48.9530", temp: 34, humidity: 40, smoke: 8  },
-  { id: "formosa",        name: "FORMOSA",        sensorId: "GO-FO-02", coords: "-15.5372,-47.3372", temp: 33, humidity: 42, smoke: 6  },
-  { id: "pirinopolis",    name: "PIRENÓPOLIS",    sensorId: "GO-PI-03", coords: "-15.8558,-48.9597", temp: 35, humidity: 37, smoke: 10 },
-  { id: "sandolandia",    name: "SANDOLÂNDIA",    sensorId: "TO-SA-04", coords: "-12.5408,-49.9192", temp: 38, humidity: 22, smoke: 15 },
-  { id: "novo-progresso", name: "NOVO PROGRESSO", sensorId: "PA-NP-05", coords: "-7.1261,-55.3853",  temp: 37, humidity: 28, smoke: 18 },
+  { id: "anapolis",          name: "ANÁPOLIS",          sensorId: "GO-AN-01", coords: "-16.3267,-48.9530", temp: 30, humidity: 48, smoke: 8  },
+  { id: "formosa",           name: "FORMOSA",            sensorId: "GO-FO-02", coords: "-15.5372,-47.3372", temp: 31, humidity: 45, smoke: 6  },
+  { id: "pirinopolis",       name: "PIRENÓPOLIS",        sensorId: "GO-PI-03", coords: "-15.8558,-48.9597", temp: 30, humidity: 47, smoke: 10 },
+  { id: "jaragua",           name: "JARAGUÁ",            sensorId: "GO-JA-04", coords: "-15.7529,-49.3344", temp: 31, humidity: 44, smoke: 9  },
+  { id: "sandolandia",       name: "SANDOLÂNDIA",        sensorId: "TO-SA-05", coords: "-12.5408,-49.9192", temp: 33, humidity: 38, smoke: 15 },
+  { id: "novo-progresso",    name: "NOVO PROGRESSO",     sensorId: "PA-NP-06", coords: "-7.1261,-55.3853",  temp: 32, humidity: 55, smoke: 18 },
+  { id: "mirador",           name: "MIRADOR",            sensorId: "MA-MI-07", coords: "-6.3745,-44.3683",  temp: 34, humidity: 31, smoke: 28 },
+  { id: "mateiros",          name: "MATEIROS",           sensorId: "TO-MA-08", coords: "-10.5464,-46.4168", temp: 35, humidity: 28, smoke: 35 },
+  { id: "lagoa-da-confusao", name: "LAGOA DA CONFUSÃO", sensorId: "TO-LC-09", coords: "-10.7906,-49.6199", temp: 34, humidity: 30, smoke: 31 },
 ];
 
 function evaluateRisk(smoke: number, humidity: number, temp: number): Risk {
@@ -95,8 +116,12 @@ function initZones(): Zone[] {
       prevSmoke: z.smoke,
       online,
       risk,
-      firmsConfirmed: risk === "critico" || risk === "alto",
-      firmsConf: risk === "critico" ? 0.94 : risk === "alto" ? 0.81 : 0,
+      firmsConfirmed: false,
+      firmsConf: 0,
+      firmsHotspots: [],
+      firmsUpdatedAt: null,
+      firmsRadiusKm: 16.7,
+      firmsWindowHours: 24,
       smokeHistory: Array.from({ length: 7 }, (_, k) =>
         Math.max(2, z.smoke - (6 - k) * (3 + i) + Math.random() * 4),
       ),
