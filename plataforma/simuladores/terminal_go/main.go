@@ -73,6 +73,14 @@ func (s *Simulador) aoReceberComando(_ mqtt.Client, msg mqtt.Message) {
 		return
 	}
 	dados := comando.Dados
+	if dados["acao"] == "encerrar_alerta" {
+		fmt.Printf("\n  ALERTA ENCERRADO — %s (%v)\n\n", strings.ToUpper(t.Dispositivo), dados["alarme_id"])
+		s.mu.Lock()
+		s.estados[t.Dispositivo].alertaPendente = false
+		s.mu.Unlock()
+		s.publicar(t, "evento", map[string]any{"evento": "recebido", "comando_id": comando.IDMensagem})
+		return
+	}
 	fmt.Printf("\n%s\n  ALERTA RECEBIDO — %s\n  Ação       : %v\n  Severidade : %v\n  Resumo     : %v\n%s\n\n",
 		strings.Repeat("=", 60), strings.ToUpper(t.Dispositivo), dados["acao"], dados["severidade"], dados["resumo"],
 		strings.Repeat("=", 60))

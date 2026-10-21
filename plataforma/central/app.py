@@ -1,23 +1,28 @@
 """
 app.py — instância central (cloud) da plataforma: API REST (OpenAPI 3 em
 /docs e /openapi.json), ingestão HTTP/lote e ingestão MQTT, todas sobre o
-mesmo pipeline do nucleo.
+mesmo pipeline do nucleo. Cada mensagem aceita segue, pelo barramento, para o
+MQTT (plataforma/...) e para o motor de regras.
 
 Execução:  uvicorn central.app:app --host 0.0.0.0 --port 8000
 """
 
+import json
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from central.api import catalogo, dispositivos, ingestao, operacao
+from central.acoes import AcaoComando, AcaoNotificar, AcaoPublicar, AcaoWebhook, ExecutorAcoes, Publicador
+from central.api import alarmes, catalogo, dispositivos, ingestao, operacao, regras
 from central.config import Configuracao, configuracao
 from central.db import criar_engine
+from central.motor import MotorRegras
 from central.mqtt import AdaptadorMqtt, BarramentoMqtt
 from central.repositorios import CatalogoPostgres, FilaInvalidasPostgres, RepositorioPostgres
-from nucleo.ingestao import PipelineIngestao
+from nucleo.ingestao import BarramentoComposto, PipelineIngestao
 from nucleo.validacao import SCHEMA_V1, diretorio_contratos
 
 logging.basicConfig(
@@ -27,25 +32,52 @@ logging.basicConfig(
 )
 
 
-def criar_app(cfg: Configuracao | None = None) -> FastAPI:
+def criar_app(
+    cfg: Configuracao | None = None,
+    publicar: Publicador | None = None,
+    estrategias: dict | None = None,
+    motor_em_segundo_plano: bool = True,
+) -> FastAPI:
+    """
+    `publicar`, `estrategias` e `motor_em_segundo_plano` existem para os testes:
+    capturar o que seria publicado no MQTT, trocar o cliente HTTP do webhook e
+    processar regras de forma síncrona.
+    """
     cfg = cfg or configuracao()
 
     @asynccontextmanager
     async def ciclo_de_vida(app: FastAPI):
         engine = criar_engine(cfg.database_url)
         mqtt = AdaptadorMqtt(cfg.mqtt_broker, cfg.mqtt_port, cfg.mqtt_client_id) if cfg.mqtt_ingestao else None
+        publicador = publicar or (_publicador_mqtt(mqtt) if mqtt else (lambda topico, carga: None))
+        executor = ExecutorAcoes(
+            engine,
+            {
+                "comando": AcaoComando(engine, publicador),
+                "webhook": AcaoWebhook(),
+                "publicar": AcaoPublicar(publicador),
+                "notificar": AcaoNotificar(),
+            }
+            | (estrategias or {}),
+        )
+        motor = MotorRegras(engine, executor, publicador)
         app.state.engine = engine
+        app.state.publicar = publicador
+        app.state.motor = motor
         app.state.pipeline = PipelineIngestao(
             CatalogoPostgres(engine),
             RepositorioPostgres(engine),
             FilaInvalidasPostgres(engine),
-            BarramentoMqtt(mqtt.cliente) if mqtt else None,
+            BarramentoComposto(*([BarramentoMqtt(mqtt.cliente)] if mqtt else []), motor),
         )
+        if motor_em_segundo_plano:
+            motor.iniciar()
         if mqtt:
             mqtt.iniciar(app.state.pipeline)
         yield
         if mqtt:
             mqtt.parar()
+        motor.parar()
         engine.dispose()
 
     app = FastAPI(
@@ -55,7 +87,7 @@ def criar_app(cfg: Configuracao | None = None) -> FastAPI:
         "mensagem canônica em /contratos/mensagem-canonica.v1.schema.json.",
         lifespan=ciclo_de_vida,
     )
-    for modulo in (ingestao, catalogo, dispositivos, operacao):
+    for modulo in (ingestao, catalogo, dispositivos, regras, alarmes, operacao):
         app.include_router(modulo.router)
 
     # Contratos publicados por URL (RF-INT-01)
@@ -73,6 +105,13 @@ def criar_app(cfg: Configuracao | None = None) -> FastAPI:
         return {"status": "ok"}
 
     return app
+
+
+def _publicador_mqtt(mqtt: AdaptadorMqtt) -> Callable[[str, dict], None]:
+    def publicar(topico: str, carga: dict) -> None:
+        mqtt.cliente.publish(topico, json.dumps(carga, ensure_ascii=False), qos=1)
+
+    return publicar
 
 
 app = criar_app()

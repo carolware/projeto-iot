@@ -311,25 +311,41 @@ partir de `plataforma/`, ex.: `python -m borda.app`.
 ### 5.3.1 Roteiro de demonstração
 
 ```bash
-# 1. Domínio urbano criado só pela API (RNF-08): alerta_publico + terminais das prefeituras
+# 1. Domínio urbano criado só pela API (RNF-08): alerta_publico, terminais das
+#    prefeituras e assinaturas "incêndios a até 80 km da cidade"
 python plataforma/simuladores/demo/cadastrar_alerta_publico.py
 
-# 2. Incêndio em Mateiros: a borda do Tocantins decide localmente e aciona a brigada
-python plataforma/simuladores/mock_incendio.py on mateiros --lat -10.55 --lon -46.30
-docker compose logs -f borda-tocantins atuadores-tocantins
+# 2. Incêndio em Pirenópolis: a borda de Goiás decide localmente e aciona a
+#    brigada; a central abre o alarme, notifica (SMS simulado) e entrega o
+#    alerta às prefeituras dentro do raio — os terminais (Go) exibem e reconhecem
+python plataforma/simuladores/mock_incendio.py on pirenopolis
+docker compose logs -f borda-goias central terminais
+curl -s 'localhost:8000/api/v1/alarmes?abertos=true' -H 'X-Inquilino: pref-anapolis'
 
-# 3. Queda do link da fazenda: a borda continua agindo e guarda tudo na fila cifrada
+# 3. Fim do incêndio: o alarme resolve sozinho, as entregas também, e os
+#    terminais recebem "alerta encerrado"
+python plataforma/simuladores/mock_incendio.py off
+
+# 4. Queda do link da fazenda: a borda continua agindo e guarda tudo na fila cifrada
 sh plataforma/simuladores/demo/link.sh off tocantins
 python plataforma/simuladores/mock_incendio.py on lagoa-da-confusao
 curl -s localhost:9101/metrics | grep borda_fila_pendente      # fila crescendo
 
-# 4. Link volta: a fila é sincronizada em lotes, sem perda nem duplicata,
-#    e os alarmes chegam à central com o horário em que ocorreram
+# 5. Link volta: a fila é sincronizada em lotes, sem perda nem duplicata, e o
+#    alarme aparece na central com o horário em que ocorreu
 sh plataforma/simuladores/demo/link.sh on tocantins
-curl -s localhost:8000/api/v1/bordas -H 'X-Inquilino: brigada-cerrado'
-
+curl -s 'localhost:8000/api/v1/alarmes?dispositivo=est-lagoa-da-confusao-01' -H 'X-Inquilino: brigada-cerrado'
 python plataforma/simuladores/mock_incendio.py off
+
+# 6. Zona sem borda (Mirador): quem decide é a central, que comanda o atuador
+python plataforma/simuladores/mock_incendio.py on mirador
 ```
+
+Regras são configuração (`/api/v1/regras` no Swagger): uma regra de escopo
+`borda` alterada na central chega aos nós de borda em até 30 s. Alarmes têm
+ciclo ativo → reconhecido → resolvido (`/api/v1/alarmes/{id}/reconhecer` e
+`/resolver`); o detalhe do alarme mostra as ações executadas, os comandos com a
+resposta de cada dispositivo e as entregas às prefeituras.
 
 Métricas Prometheus dos nós de borda: `localhost:9101/metrics` (Tocantins) e
 `localhost:9102/metrics` (Goiás).

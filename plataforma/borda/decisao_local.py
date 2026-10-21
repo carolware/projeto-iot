@@ -72,11 +72,11 @@ class DecisorLocal:
         return self._decidir(regra, mensagem, topico, valores)
 
     def _decidir(self, regra: Regra, mensagem: dict, topico: Topico, valores: dict) -> Decisao:
-        atuador = self.atuador_do_site.format(site=topico.site)
         comandos = []
         for acao in regra.acoes:
             if acao.get("tipo") != "comando":
                 continue
+            atuador = acao.get("alvo", self.atuador_do_site).format(site=topico.site)
             comando = nova_mensagem(
                 atuador,
                 "comando",
@@ -103,7 +103,10 @@ class DecisorLocal:
                 "severidade": regra.severidade,
                 "leituras": valores,
                 "mensagem_origem": mensagem["id_mensagem"],
-                "comandos": [c["id_mensagem"] for _, c in comandos],
+                "comandos": [
+                    {"id": c["id_mensagem"], "dispositivo": c["dispositivo"], "acao": c["dados"]["acao"]}
+                    for _, c in comandos
+                ],
             },
         )
         return Decisao(regra, alarme, comandos)

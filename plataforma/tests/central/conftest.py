@@ -8,6 +8,7 @@ service container (ver .github/workflows/ci.yml).
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from alembic import command
@@ -17,6 +18,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 
+from central.acoes import AcaoWebhook
 from central.app import criar_app
 from central.config import Configuracao, configuracao
 from central.seeds.seed import semear
@@ -55,9 +57,43 @@ def url_banco():
     return texto
 
 
+class Publicadas(list):
+    """Tudo o que a central publicaria no MQTT: (tópico, carga)."""
+
+    def em(self, prefixo: str) -> list[dict]:
+        return [carga for topico, carga in self if topico.startswith(prefixo)]
+
+
+class WebhookFake:
+    """Substitui requests.post: responde com os códigos programados (padrão 200)."""
+
+    def __init__(self):
+        self.respostas: list[int] = []
+        self.chamadas: list[tuple[str, dict]] = []
+
+    def __call__(self, url, json=None, timeout=None):
+        self.chamadas.append((url, json))
+        return SimpleNamespace(status_code=self.respostas.pop(0) if self.respostas else 200)
+
+
 @pytest.fixture(scope="session")
-def cliente(url_banco):
-    app = criar_app(Configuracao(database_url=url_banco, mqtt_broker="", mqtt_port=0, mqtt_ingestao=False))
+def publicadas():
+    return Publicadas()
+
+
+@pytest.fixture(scope="session")
+def webhook():
+    return WebhookFake()
+
+
+@pytest.fixture(scope="session")
+def cliente(url_banco, publicadas, webhook):
+    app = criar_app(
+        Configuracao(database_url=url_banco, mqtt_broker="", mqtt_port=0, mqtt_ingestao=False),
+        publicar=lambda topico, carga: publicadas.append((topico, carga)),
+        estrategias={"webhook": AcaoWebhook(post=webhook)},
+        motor_em_segundo_plano=False,  # regras processadas na hora: asserções determinísticas
+    )
     with TestClient(app) as cliente:
         yield cliente
 

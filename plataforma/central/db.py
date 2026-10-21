@@ -216,3 +216,93 @@ dlq = Table(
     Column("payload", Text),
     Column("motivo", Text),
 )
+
+regra = Table(
+    "regra",
+    metadata,
+    Column("id", Uuid, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("inquilino_id", Uuid),
+    Column("dominio_id", Uuid),
+    Column("nome", Text),
+    Column("condicao", _JSON),
+    Column("janela_s", Integer),
+    Column("severidade", Text),
+    Column("escopo", Text),
+    Column("ativa", Boolean),
+)
+
+regra_acao = Table(
+    "regra_acao",
+    metadata,
+    Column("id", Uuid, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("regra_id", Uuid),
+    Column("tipo", Text),
+    Column("config", _JSON),
+    Column("ordem", Integer),
+)
+
+assinatura_alerta = Table(
+    "assinatura_alerta",
+    metadata,
+    Column("id", Uuid, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("inquilino_id", Uuid),
+    Column("nome", Text),
+    Column("dominio_slug", Text),
+    Column("lat", Float),
+    Column("lon", Float),
+    Column("raio_km", Float),
+    Column("severidade_min", Text),
+    Column("ativa", Boolean),
+)
+
+alarme = Table(
+    "alarme",
+    metadata,
+    Column("id", Uuid, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("inquilino_id", Uuid),
+    Column("regra_id", Uuid),
+    Column("dispositivo_id", Uuid),
+    Column("assinatura_id", Uuid),
+    Column("origem_alarme_id", Uuid),
+    Column("severidade", Text),
+    Column("estado", Text),
+    Column("ocorrido_em", DateTime(timezone=True)),
+    Column("reconhecido_em", DateTime(timezone=True)),
+    Column("reconhecido_por", Text),
+    Column("resolvido_em", DateTime(timezone=True)),
+    Column("resolvido_por", Text),
+    Column("ocorrencias", Integer),
+    Column("atualizado_em", DateTime(timezone=True)),
+    Column("dados", _JSON),
+)
+
+comando = Table(
+    "comando",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("dispositivo_id", Uuid),
+    Column("alarme_id", Uuid),
+    Column("acao", Text),
+    Column("payload", _JSON),
+    Column("origem", Text),
+    Column("estado", Text),
+    Column("enviado_em", DateTime(timezone=True)),
+    Column("respondido_em", DateTime(timezone=True)),
+    Column("resposta", _JSON),
+)
+
+execucao_acao = Table(
+    "execucao_acao",
+    metadata,
+    Column("id", Uuid, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("alarme_id", Uuid),
+    Column("regra_acao_id", Uuid),
+    Column("tipo", Text),
+    Column("config", _JSON),
+    Column("tentativas", Integer),
+    Column("status", Text),
+    Column("proxima_tentativa_em", DateTime(timezone=True)),
+    Column("ultimo_erro", Text),
+    Column("executado_em", DateTime(timezone=True)),
+    Column("criado_em", DateTime(timezone=True)),
+)

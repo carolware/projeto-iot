@@ -89,3 +89,43 @@ def test_mensagem_invalida_nao_entra_na_fila(no, topico, carga):
     assert fila.contagem()["pendente"] == 0
     with fila._lock:
         assert fila._conexao.execute("SELECT count(*) FROM invalidas").fetchone()[0] == 1
+
+
+def test_borda_baixa_e_guarda_as_regras_da_central(tmp_path, monkeypatch):
+    """RF-EDG-04: regra alterada na central passa a valer no nó na próxima conexão (e sobrevive a reinício)."""
+    salvas = tmp_path / "regras.json"
+    monkeypatch.setattr(app, "REGRAS_SINCRONIZADAS", salvas)
+    da_central = [
+        {
+            "nome": "risco-critico",
+            "severidade": "critico",
+            "escopo": "borda",
+            "janela_s": 0,
+            "condicao": {"todas": [{"grandeza": "fumaca", "op": ">=", "valor": 70}]},
+            "acoes": [{"tipo": "comando", "acao": "acionar_brigada", "alvo": "sirene-{site}"}],
+        },
+    ]
+    monkeypatch.setattr(
+        app.requests,
+        "get",
+        lambda url, timeout: SimpleNamespace(raise_for_status=lambda: None, json=lambda: da_central),
+    )
+    decisor = DecisorLocal(REGRAS, "borda-tocantins")
+    app.atualizar_regras(decisor)
+
+    assert [r.nome for r in decisor.regras] == ["risco-critico"]
+    assert json.loads(salvas.read_text()) == da_central
+    assert [r.nome for r in app.carregar_regras_locais()] == ["risco-critico"]  # reinício sem link
+    decisao = decisor.avaliar(leitura(fumaca=75, umidade=50), app.parsear_topico(TOPICO))
+    assert decisao.comandos[0][0] == "brigada-cerrado/mateiros/incendio/sirene-mateiros/comando"
+
+
+def test_sem_link_as_regras_ficam_como_estao(monkeypatch):
+    def falha(url, timeout):
+        raise app.requests.ConnectionError("sem rota")
+
+    monkeypatch.setattr(app.requests, "get", falha)
+    decisor = DecisorLocal(REGRAS, "borda-tocantins")
+    with pytest.raises(app.LinkIndisponivel):
+        app.atualizar_regras(decisor)
+    assert decisor.regras == REGRAS

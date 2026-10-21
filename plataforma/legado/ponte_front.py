@@ -5,7 +5,7 @@ e o tempo real da central.
 
   plataforma/telemetria/brigada-cerrado/...  ──►  {TOPIC_BASE}/{zona}/sensor/{grandeza}
   plataforma/evento/... varredura_firms      ──►  {TOPIC_BASE}/{zona}/satelite/firms   (retido)
-  plataforma/evento/... alarme_local         ──►  {TOPIC_BASE}/{zona}/atuador/alerta
+  plataforma/alarme/... (aberto)             ──►  {TOPIC_BASE}/{zona}/atuador/alerta
   {TOPIC_BASE}/{zona}/atuador/alerta (painel) ──►  comando canônico ao atuador da zona
                                                    (desce para o campo pela bridge da borda)
 """
@@ -71,24 +71,32 @@ def evento(cliente: mqtt.Client, msg: dict) -> None:
         _publicar(
             cliente, zona, "satelite/firms", {"zona": zona, "atualizado_em": msg["timestamp"], **carga}, retain=True
         )
-    elif dados.get("evento") == "alarme_local":
-        leituras = dados.get("leituras", {})
-        _publicar(
-            cliente,
-            zona,
-            "atuador/alerta",
-            {
-                "zona": zona,
-                "risco": dados["severidade"],
-                "temperatura": leituras.get("temperatura"),
-                "umidade": leituras.get("umidade"),
-                "fumaca": leituras.get("fumaca"),
-                "timestamp": msg["timestamp"],
-                "firms_confirmado": firms_confirmado.get(site, False),
-                "acao": "acionar_brigada" if dados["severidade"] == "critico" else "reforcar_monitoramento",
-                "origem": f"borda:{msg.get('via')}",
-            },
-        )
+
+
+def alarme(cliente: mqtt.Client, msg: dict) -> None:
+    """Alarme aberto na central (da borda ou das zonas diretas) → alerta do painel antigo."""
+    a = msg["alarme"]
+    if msg["evento"] != "aberto" or not a.get("site"):
+        return
+    zona = SITE_PARA_FRONT.get(a["site"], a["site"])
+    leituras = a["dados"].get("leituras", {})
+    satelite = a["dados"].get("satelite") or {}
+    _publicar(
+        cliente,
+        zona,
+        "atuador/alerta",
+        {
+            "zona": zona,
+            "risco": a["severidade"],
+            "temperatura": leituras.get("temperatura"),
+            "umidade": leituras.get("umidade"),
+            "fumaca": leituras.get("fumaca"),
+            "timestamp": a["ocorrido_em"],
+            "firms_confirmado": bool(satelite.get("confirmado")) or firms_confirmado.get(a["site"], False),
+            "acao": "acionar_brigada" if a["severidade"] == "critico" else "reforcar_monitoramento",
+            "origem": f"central:{a.get('regra')}",
+        },
+    )
 
 
 def comando_do_painel(cliente: mqtt.Client, topico: str, carga: dict) -> None:
@@ -116,6 +124,8 @@ def ao_receber(cliente: mqtt.Client, userdata, mensagem: mqtt.MQTTMessage) -> No
             telemetria(cliente, carga)
         elif mensagem.topic.startswith("plataforma/evento/"):
             evento(cliente, carga)
+        elif mensagem.topic.startswith("plataforma/alarme/"):
+            alarme(cliente, carga)
         else:
             comando_do_painel(cliente, mensagem.topic, carga)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
@@ -129,6 +139,7 @@ def main() -> None:
         [
             (f"plataforma/telemetria/{INQUILINO}/#", 0),
             (f"plataforma/evento/{INQUILINO}/#", 0),
+            (f"plataforma/alarme/{INQUILINO}/#", 0),
             (f"{TOPIC_BASE}/+/atuador/alerta", 1),
         ]
     )

@@ -125,7 +125,9 @@ def test_risco_critico_aciona_a_brigada_localmente():
     assert validar_mensagem(decisao.alarme) == []
     assert decisao.alarme["dispositivo"] == "est-mateiros-01" and decisao.alarme["timestamp"] == msg["timestamp"]
     assert decisao.alarme["via"] == "borda-tocantins"
-    assert decisao.alarme["dados"]["comandos"] == [comando["id_mensagem"]]
+    assert decisao.alarme["dados"]["comandos"] == [
+        {"id": comando["id_mensagem"], "dispositivo": "atuador-mateiros-01", "acao": "acionar_brigada"}
+    ]
 
 
 def test_alerta_repete_so_apos_cooldown_mas_escalada_para_critico_e_imediata():

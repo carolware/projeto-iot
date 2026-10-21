@@ -75,6 +75,62 @@ PERFIS_RURAIS = {
 }
 
 
+# Regras do domínio incendio. As de escopo "borda" são as mesmas de
+# borda/regras-padrao.json (que a borda usa só até baixar estas da central).
+REGRAS_INCENDIO = [
+    {
+        "nome": "risco-critico",
+        "severidade": "critico",
+        "escopo": "borda",
+        "condicao": {
+            "todas": [{"grandeza": "fumaca", "op": ">=", "valor": 85}, {"grandeza": "umidade", "op": "<", "valor": 15}]
+        },
+        "acoes": [
+            {"tipo": "alarme"},
+            {"tipo": "comando", "acao": "acionar_brigada"},
+            {"tipo": "notificar", "canal": "sms", "destino": "+5562999990001"},
+        ],
+    },
+    {
+        "nome": "risco-alto",
+        "severidade": "alto",
+        "escopo": "borda",
+        "condicao": {
+            "todas": [{"grandeza": "fumaca", "op": ">=", "valor": 60}, {"grandeza": "umidade", "op": "<", "valor": 25}]
+        },
+        "acoes": [{"tipo": "alarme"}, {"tipo": "comando", "acao": "reforcar_monitoramento"}],
+    },
+    {
+        "nome": "risco-medio",
+        "severidade": "medio",
+        "escopo": "borda",
+        "condicao": {
+            "alguma": [
+                {"grandeza": "fumaca", "op": ">=", "valor": 40},
+                {"grandeza": "umidade", "op": "<", "valor": 35},
+                {"grandeza": "temperatura", "op": ">", "valor": 33},
+            ]
+        },
+        "acoes": [],
+    },
+    {
+        # correlação na nuvem: o satélite viu fogo no raio da zona
+        "nome": "foco-confirmado-satelite",
+        "severidade": "alto",
+        "escopo": "central",
+        "condicao": {"todas": [{"grandeza": "focos", "op": ">=", "valor": 1}]},
+        "acoes": [{"tipo": "alarme"}, {"tipo": "notificar", "canal": "email", "destino": "brigada@cerrado.example"}],
+    },
+    {
+        "nome": "estacao-sem-dados",
+        "severidade": "medio",
+        "escopo": "central",
+        "condicao": {"ausencia": {"segundos": 300, "perfil": "estacao-incendio"}},
+        "acoes": [{"tipo": "alarme"}],
+    },
+]
+
+
 def _garantir(conexao: Connection, tabela: Table, chave: dict, valores: dict | None = None):
     """INSERT ... ON CONFLICT DO NOTHING e devolve o id (novo ou existente)."""
     conexao.execute(insert(tabela).values(**chave, **(valores or {})).on_conflict_do_nothing())
@@ -106,6 +162,30 @@ def semear(conexao: Connection) -> None:
                 insert(db.perfil_grandeza)
                 .values(perfil_id=perfis[slug], grandeza=grandeza, unidade=unidade, valor_min=minimo, valor_max=maximo)
                 .on_conflict_do_nothing()
+            )
+    for regra in REGRAS_INCENDIO:
+        novo = conexao.execute(
+            insert(db.regra)
+            .values(
+                inquilino_id=brigada,
+                dominio_id=incendio,
+                **{k: v for k, v in regra.items() if k != "acoes"},
+            )
+            .on_conflict_do_nothing()
+            .returning(db.regra.c.id)
+        ).scalar()
+        if novo and regra["acoes"]:  # ações só na criação: alterações feitas pela API são preservadas
+            conexao.execute(
+                insert(db.regra_acao),
+                [
+                    {
+                        "regra_id": novo,
+                        "tipo": a["tipo"],
+                        "config": {k: v for k, v in a.items() if k != "tipo"},
+                        "ordem": i,
+                    }
+                    for i, a in enumerate(regra["acoes"])
+                ],
             )
     for slug, nome in BORDAS.items():
         _garantir(conexao, db.no_borda, {"slug": slug}, {"inquilino_id": brigada, "nome": nome, "versao": "0.1.0"})

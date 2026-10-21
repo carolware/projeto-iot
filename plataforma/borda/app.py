@@ -7,7 +7,8 @@ app.py — nó de borda (camada fog). Substitui o gateway da 1ª entrega.
 
 Os comandos da central para os dispositivos do campo chegam pela bridge do
 Mosquitto local (ver infra/mosquitto/borda-*.conf), que os guarda enquanto o
-link está fora.
+link está fora. As regras locais vêm da central (escopo "borda", RF-EDG-04) e
+ficam salvas no disco do nó: reiniciar sem link usa a última versão recebida.
 
 Execução:  python -m borda.app
 """
@@ -53,6 +54,8 @@ SYNC_INTERVALO_S = float(os.getenv("SYNC_INTERVALO_S", "1"))
 SYNC_BACKOFF_MAX_S = float(os.getenv("SYNC_BACKOFF_MAX_S", "30"))
 LOTE_MAX = int(os.getenv("LOTE_MAX", "500"))
 ESTADO_INTERVALO_S = float(os.getenv("ESTADO_INTERVALO_S", "10"))
+REGRAS_INTERVALO_S = float(os.getenv("REGRAS_INTERVALO_S", "30"))
+REGRAS_SINCRONIZADAS = Path(os.getenv("BORDA_REGRAS_SINCRONIZADAS", str(Path(ARQUIVO_FILA).with_name("regras.json"))))
 RETENCAO_ENVIADAS_S = float(os.getenv("RETENCAO_ENVIADAS_S", "3600"))
 ALERTA_COOLDOWN_SEG = float(os.getenv("ALERTA_COOLDOWN_SEG", "30"))
 METRICAS_PORTA = int(os.getenv("METRICAS_PORTA", "9100"))
@@ -171,9 +174,35 @@ def informar_estado(fila: FilaLocal) -> None:
         raise LinkIndisponivel(str(exc)) from exc
 
 
-def laco_sincronizacao(fila: FilaLocal, sincronizador: Sincronizador, parar: threading.Event) -> None:
+def carregar_regras_locais() -> list[Regra]:
+    """Última versão recebida da central; sem ela, o arquivo padrão que vem com o nó."""
+    origem = REGRAS_SINCRONIZADAS if REGRAS_SINCRONIZADAS.exists() else Path(REGRAS)
+    return [Regra.de_dict(r) for r in json.loads(origem.read_text(encoding="utf-8"))]
+
+
+def atualizar_regras(decisor: DecisorLocal) -> None:
+    """Baixa as regras de escopo borda (RF-EDG-04) e troca as do decisor se mudaram."""
+    try:
+        resposta = requests.get(f"{CENTRAL_URL}/api/v1/bordas/{BORDA_ID}/regras", timeout=5)
+        resposta.raise_for_status()
+        brutas = resposta.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise LinkIndisponivel(str(exc)) from exc
+    novas = [Regra.de_dict(r) for r in brutas]
+    if [r.para_dict() for r in novas] == [r.para_dict() for r in decisor.regras]:
+        return
+    decisor.regras = novas
+    temporario = REGRAS_SINCRONIZADAS.with_suffix(".tmp")
+    temporario.write_text(json.dumps(brutas, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporario.replace(REGRAS_SINCRONIZADAS)  # troca atômica: queda de energia não deixa arquivo pela metade
+    log.info("Regras locais atualizadas pela central: %s", ", ".join(r.nome for r in novas) or "nenhuma")
+
+
+def laco_sincronizacao(
+    fila: FilaLocal, sincronizador: Sincronizador, parar: threading.Event, decisor: DecisorLocal | None = None
+) -> None:
     espera = SYNC_INTERVALO_S
-    ultimo_estado = 0.0
+    ultimo_estado = ultimas_regras = 0.0
     online = None
     while not parar.wait(espera):
         try:
@@ -182,6 +211,9 @@ def laco_sincronizacao(fila: FilaLocal, sincronizador: Sincronizador, parar: thr
                 informar_estado(fila)
                 ultimo_estado = time.time()
                 fila.limpar_enviadas(RETENCAO_ENVIADAS_S)
+            if decisor and (online is False or time.time() - ultimas_regras >= REGRAS_INTERVALO_S):
+                atualizar_regras(decisor)  # também logo após reconectar
+                ultimas_regras = time.time()
             if online is False:
                 log.info("Link com a central restabelecido")
             if enviados:
@@ -213,7 +245,7 @@ def main() -> None:
         )
     Path(ARQUIVO_FILA).parent.mkdir(parents=True, exist_ok=True)
     fila = FilaLocal(ARQUIVO_FILA, CHAVE.encode())
-    regras = [Regra.de_dict(r) for r in json.loads(Path(REGRAS).read_text(encoding="utf-8"))]
+    regras = carregar_regras_locais()
     decisor = DecisorLocal(regras, BORDA_ID, cooldown_s=ALERTA_COOLDOWN_SEG)
 
     log.info("═══════════════════════════════════════════════")
@@ -229,7 +261,7 @@ def main() -> None:
     no.iniciar()
     parar = threading.Event()
     try:
-        laco_sincronizacao(fila, Sincronizador(fila, enviar_lote, LOTE_MAX), parar)
+        laco_sincronizacao(fila, Sincronizador(fila, enviar_lote, LOTE_MAX), parar, decisor)
     except KeyboardInterrupt:
         log.info("Encerrando nó de borda…")
     finally:

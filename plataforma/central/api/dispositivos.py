@@ -1,19 +1,23 @@
 """
 dispositivos.py — cadastro (RF-DIS-01), online/offline pelo intervalo do
-perfil (RF-DIS-06), último estado (RF-DAD-02) e histórico de telemetria por
-grandeza e intervalo, bruto ou agregado por hora (RF-DAD-01, RF-PRO-04).
+perfil (RF-DIS-06), último estado (RF-DAD-02), histórico de telemetria por
+grandeza e intervalo, bruto ou agregado por hora (RF-DAD-01, RF-PRO-04),
+comandos com resposta (RF-DIS-05) e gêmeo do dispositivo (RF-DIS-04).
 """
 
+import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import Interval, insert, literal_column, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import func
 
 from central import db
+from central.acoes import FalhaAcao, enviar_comando
 from central.api.comum import (
     Banco,
     Contexto,
@@ -310,3 +314,136 @@ def telemetria(
         if fim:
             consulta = consulta.where(tempo < fim)
         return paginar(conexao, consulta, pag, {"tempo": tempo, "grandeza": t.c.grandeza}, "-tempo")
+
+
+# ──────────────────────────────────────────────
+# Comandos (RF-DIS-05) e gêmeo (RF-DIS-04)
+# ──────────────────────────────────────────────
+
+
+class ComandoEntrada(BaseModel):
+    acao: Slug
+    dados: dict = Field(default_factory=dict, description="Parâmetros adicionais do comando")
+
+
+class Comando(BaseModel):
+    id: str
+    acao: str
+    origem: str
+    estado: Literal["pendente", "enviado", "confirmado", "falhou"]
+    enviado_em: datetime | None
+    respondido_em: datetime | None
+    resposta: dict | None
+    alarme_id: str | None
+
+
+class Gemeo(BaseModel):
+    dispositivo: str
+    desejado: dict
+    desejado_em: datetime | None
+    relatado: dict
+    relatado_em: datetime | None
+    diferenca: dict = Field(description="Chaves do desejado ainda não relatadas pelo dispositivo")
+
+
+@router.post("/{slug}/comandos", status_code=202, response_model=Comando)
+def enviar(request: Request, banco: Banco, ctx: Contexto, slug: str, entrada: ComandoEntrada):
+    with banco.connect() as conexao:
+        _id_dispositivo(conexao, ctx, slug)  # 404 antes de qualquer efeito
+    try:
+        comando_id = enviar_comando(
+            banco, request.app.state.publicar, ctx.slug, slug, {**entrada.dados, "acao": entrada.acao}, origem="painel"
+        )
+    except FalhaAcao as exc:
+        raise HTTPException(409, str(exc)) from exc
+    with banco.begin() as conexao:
+        auditar(
+            conexao,
+            ctx,
+            "comando",
+            uuid.UUID(comando_id),
+            "enviar",
+            depois={"dispositivo": slug, **entrada.model_dump()},
+        )
+    return _comandos(banco, ctx, slug, comando_id)[0]
+
+
+@router.get("/{slug}/comandos", response_model=Pagina[Comando])
+def listar_comandos(banco: Banco, ctx: Contexto, slug: str, pag: ParametrosPagina):
+    c = db.comando
+    with banco.connect() as conexao:
+        dispositivo_id = _id_dispositivo(conexao, ctx, slug)
+        consulta = select(
+            c.c.id, c.c.acao, c.c.origem, c.c.estado, c.c.enviado_em, c.c.respondido_em, c.c.resposta, c.c.alarme_id
+        ).where(c.c.dispositivo_id == dispositivo_id)
+        pagina = paginar(conexao, consulta, pag, {"enviado_em": c.c.enviado_em}, "-enviado_em")
+    pagina["itens"] = [_formatar_comando(x) for x in pagina["itens"]]
+    return pagina
+
+
+def _comandos(banco, ctx, slug: str, comando_id: str) -> list[dict]:
+    c = db.comando
+    with banco.connect() as conexao:
+        dispositivo_id = _id_dispositivo(conexao, ctx, slug)
+        linhas = conexao.execute(
+            select(
+                c.c.id, c.c.acao, c.c.origem, c.c.estado, c.c.enviado_em, c.c.respondido_em, c.c.resposta, c.c.alarme_id
+            ).where(c.c.dispositivo_id == dispositivo_id, c.c.id == uuid.UUID(comando_id))
+        ).mappings()
+        return [_formatar_comando(dict(x)) for x in linhas]
+
+
+def _formatar_comando(linha: dict) -> dict:
+    return linha | {"id": str(linha["id"]), "alarme_id": str(linha["alarme_id"]) if linha["alarme_id"] else None}
+
+
+def _gemeo(conexao, ctx, slug: str) -> dict:
+    g = db.gemeo
+    dispositivo_id = _id_dispositivo(conexao, ctx, slug)
+    linha = conexao.execute(select(g).where(g.c.dispositivo_id == dispositivo_id)).mappings().first()
+    linha = dict(linha) if linha else {"desejado": {}, "desejado_em": None, "relatado": {}, "relatado_em": None}
+    diferenca = {k: v for k, v in (linha["desejado"] or {}).items() if (linha["relatado"] or {}).get(k) != v}
+    return {
+        "dispositivo": slug,
+        **{k: linha[k] for k in ("desejado", "desejado_em", "relatado", "relatado_em")},
+        "diferenca": diferenca,
+    }
+
+
+@router.get("/{slug}/gemeo", response_model=Gemeo)
+def obter_gemeo(banco: Banco, ctx: Contexto, slug: str):
+    with banco.connect() as conexao:
+        return _gemeo(conexao, ctx, slug)
+
+
+@router.put("/{slug}/gemeo/desejado", response_model=Gemeo, summary="Definir o estado desejado (comando assíncrono)")
+def definir_desejado(request: Request, banco: Banco, ctx: Contexto, slug: str, desejado: dict):
+    """
+    Grava o desejado e envia o comando `aplicar_desejado` com QoS 1 e sessão
+    persistente: se o aparelho estiver offline, o broker entrega na reconexão;
+    enquanto ele não relatar os novos valores, a diferença aparece em `diferenca`.
+    """
+    g = db.gemeo
+    with banco.begin() as conexao:
+        dispositivo_id = _id_dispositivo(conexao, ctx, slug)
+        antes = _gemeo(conexao, ctx, slug)
+        stmt = pg_insert(g).values(dispositivo_id=dispositivo_id, desejado=desejado, desejado_em=func.now())
+        conexao.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["dispositivo_id"], set_={"desejado": stmt.excluded.desejado, "desejado_em": func.now()}
+            )
+        )
+        auditar(conexao, ctx, "gemeo", dispositivo_id, "definir_desejado", antes=antes["desejado"], depois=desejado)
+    try:
+        enviar_comando(
+            banco,
+            request.app.state.publicar,
+            ctx.slug,
+            slug,
+            {"acao": "aplicar_desejado", "desejado": desejado},
+            origem="painel",
+        )
+    except FalhaAcao as exc:
+        raise HTTPException(409, str(exc)) from exc
+    with banco.connect() as conexao:
+        return _gemeo(conexao, ctx, slug)

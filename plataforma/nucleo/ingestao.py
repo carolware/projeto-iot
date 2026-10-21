@@ -142,6 +142,21 @@ class BarramentoNulo:
         pass
 
 
+class BarramentoComposto:
+    """Entrega cada mensagem a vários assinantes (ex.: MQTT + motor de regras) — Observer."""
+
+    def __init__(self, *assinantes: Barramento):
+        self.assinantes = assinantes
+
+    def publicar_aceita(self, mensagem: MensagemEnriquecida) -> None:
+        for assinante in self.assinantes:
+            assinante.publicar_aceita(mensagem)
+
+    def publicar_recusada(self, recusa: Recusa) -> None:
+        for assinante in self.assinantes:
+            assinante.publicar_recusada(recusa)
+
+
 # ──────────────────────────────────────────────
 # Caso de uso
 # ──────────────────────────────────────────────

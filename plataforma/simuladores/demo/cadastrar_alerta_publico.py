@@ -2,7 +2,9 @@
 cadastrar_alerta_publico.py — demonstração do critério "domínio novo só por
 configuração" (RNF-08, RF-CEN-01): cria pela API, sem nenhuma alteração de
 código, o domínio `alerta_publico` nas prefeituras, o perfil do terminal de
-alerta e um terminal na Defesa Civil e outro nos bombeiros de cada cidade.
+alerta, um terminal na Defesa Civil e outro nos bombeiros de cada cidade e a
+assinatura de alerta: incêndios de severidade alta ou crítica num raio de
+80 km da cidade passam a chegar aos terminais da prefeitura.
 
 Idempotente: rodar de novo não duplica nada (409 = já existe).
 
@@ -13,7 +15,14 @@ import argparse
 
 import requests
 
-PREFEITURAS = ("anapolis", "formosa", "pirenopolis", "jaragua")
+# cidade → (lat, lon) do centro
+PREFEITURAS = {
+    "anapolis": (-16.3267, -48.9530),
+    "formosa": (-15.5372, -47.3372),
+    "pirenopolis": (-15.8558, -48.9597),
+    "jaragua": (-15.7529, -49.3344),
+}
+RAIO_KM = 80
 TERMINAIS = {"defesa-civil": "dc", "bombeiros": "bm"}
 
 
@@ -36,7 +45,7 @@ def main() -> None:
     central = parser.parse_args().central.rstrip("/")
 
     topicos = []
-    for cidade in PREFEITURAS:
+    for cidade, (lat, lon) in PREFEITURAS.items():
         inquilino = f"pref-{cidade}"
         print(f"── {inquilino}")
         print("   domínio alerta_publico:", postar(central, "/api/v1/catalogo/dominios", inquilino, {
@@ -64,6 +73,20 @@ def main() -> None:
                 "firmware": "terminal_go",
             }))
             topicos.append(f"{inquilino}/{site}/alerta_publico/{slug}")
+        existentes = requests.get(
+            f"{central}/api/v1/assinaturas", headers={"X-Inquilino": inquilino}, timeout=10
+        ).json()["itens"]
+        if any(a["dominio"] == "incendio" for a in existentes):
+            print("   assinatura incendio: já existia")
+        else:
+            print(f"   assinatura incendio ({RAIO_KM} km):", postar(central, "/api/v1/assinaturas", inquilino, {
+                "nome": f"Incêndios no entorno de {cidade.title()}",
+                "dominio": "incendio",
+                "lat": lat,
+                "lon": lon,
+                "raio_km": RAIO_KM,
+                "severidade_min": "alto",
+            }))
 
     print("\nTERMINAIS=" + ",".join(topicos))
 
