@@ -30,12 +30,23 @@ from simuladores.zonas import BROKER_NA_MAQUINA, TOPICO_MOCK, ZONAS  # noqa: E40
 load_dotenv()
 
 FIRMS_RAIO = float(os.getenv("FIRMS_RAIO_GRAUS", "0.15"))
+# usuário de serviço "simulacao": só pode publicar no canal de controle da simulação
+SENHA = os.getenv("MQTT_SENHA_SIMULACAO", "")
+CA = os.getenv("MQTT_CA_MAQUINA") or str(Path(__file__).resolve().parents[1] / "infra" / "pki" / "gerado" / "ca.crt")
 
 
 def publicar(payload: dict, regioes: set) -> None:
     for regiao in regioes:
         host, porta = BROKER_NA_MAQUINA[regiao]
-        publish.single(TOPICO_MOCK, json.dumps(payload), hostname=host, port=porta, qos=1)
+        publish.single(
+            TOPICO_MOCK,
+            json.dumps(payload),
+            hostname=host,
+            port=porta,
+            qos=1,
+            auth={"username": "simulacao", "password": SENHA},
+            tls={"ca_certs": CA},
+        )
         print(f"[mock] → {host}:{porta} {TOPICO_MOCK}  {payload}")
 
 

@@ -18,13 +18,14 @@ import uuid
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 
+from nucleo.conexao_mqtt import configurar
 from nucleo.mensagem import nova_mensagem
 from nucleo.topicos import montar_topico
 
 load_dotenv()
 
 BROKER = os.getenv("MQTT_BROKER", "localhost")
-PORT = int(os.getenv("MQTT_PORT", "1883"))
+PORT = int(os.getenv("MQTT_PORT", "8883"))
 TOPIC_BASE = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
 INQUILINO = "brigada-cerrado"
 ACOES_PAINEL = {"acionar_brigada", "reforcar_monitoramento", "silenciar_alerta"}
@@ -133,7 +134,7 @@ def ao_receber(cliente: mqtt.Client, userdata, mensagem: mqtt.MQTTMessage) -> No
 
 
 def main() -> None:
-    cliente = mqtt.Client(client_id=f"ponte-front-{uuid.uuid4().hex[:8]}")
+    cliente = configurar(mqtt.Client(client_id=f"ponte-front-{uuid.uuid4().hex[:8]}"))  # usuário "ponte" (MQTT_USUARIO)
     cliente.on_message = ao_receber
     cliente.on_connect = lambda c, u, f, rc: c.subscribe(
         [

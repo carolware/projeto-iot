@@ -51,11 +51,11 @@ ZONAS: dict[str, Zona] = {
     )
 }
 
-# Broker de cada região visto da máquina do desenvolvedor (portas publicadas pelo compose)
+# Broker de cada região visto da máquina do desenvolvedor (portas TLS publicadas pelo compose)
 BROKER_NA_MAQUINA = {
-    "tocantins": ("localhost", int(os.getenv("MQTT_PORTA_BORDA_TOCANTINS", "1884"))),
-    "goias": ("localhost", int(os.getenv("MQTT_PORTA_BORDA_GOIAS", "1885"))),
-    None: ("localhost", int(os.getenv("MQTT_PORT", "1883"))),
+    "tocantins": ("localhost", int(os.getenv("MQTT_PORTA_BORDA_TOCANTINS", "8884"))),
+    "goias": ("localhost", int(os.getenv("MQTT_PORTA_BORDA_GOIAS", "8885"))),
+    None: ("localhost", int(os.getenv("MQTT_PORTA_CENTRAL", "8883"))),
 }
 
 # Canal de controle da simulação (não faz parte da plataforma)

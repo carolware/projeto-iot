@@ -4,6 +4,9 @@ package main
 // montada só com a biblioteca padrão: integração por contrato, sem SDK.
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,4 +85,13 @@ func LerComando(payload []byte, t Terminal) (Mensagem, error) {
 		return m, errors.New("dados.acao ausente")
 	}
 	return m, nil
+}
+
+// DerivarSenha reproduz nucleo/credenciais.py: a credencial de um dispositivo
+// SIMULADO é derivada do segredo de provisionamento (não há fábrica para
+// gravá-la no aparelho). A plataforma guarda só o hash dela.
+func DerivarSenha(segredo, dispositivo string) string {
+	mac := hmac.New(sha256.New, []byte(segredo))
+	mac.Write([]byte("dispositivo:" + dispositivo))
+	return base64.URLEncoding.EncodeToString(mac.Sum(nil))[:32]
 }

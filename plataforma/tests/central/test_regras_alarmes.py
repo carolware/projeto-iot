@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import text
 
 from nucleo import Medida, nova_mensagem
-from tests.central.conftest import ANAPOLIS, BRIGADA
+from tests.central.conftest import ADMIN, ANAPOLIS, BORDA_GOIAS, BRIGADA
 
 AGORA = lambda: datetime.now(UTC)  # noqa: E731
 
@@ -48,7 +48,7 @@ def alarme_local(
 
 
 def enviar(cliente, *mensagens):
-    corpo = cliente.post("/api/v1/ingestao/lote", json={"mensagens": list(mensagens)}).json()
+    corpo = cliente.post("/api/v1/ingestao/lote", json={"mensagens": list(mensagens)}, headers=ADMIN).json()
     assert corpo["recusadas"] == 0, corpo
     return corpo
 
@@ -388,19 +388,23 @@ def test_regra_invalida_e_recusada_e_desativar_funciona(cliente, silo):
 
 def test_borda_recebe_so_regras_de_escopo_borda(cliente):
     """RF-EDG-04: regra alterada na central passa a valer no nó na próxima conexão."""
-    regras = cliente.get("/api/v1/bordas/borda-goias/regras").json()
+    regras = cliente.get("/api/v1/bordas/borda-goias/regras", headers=BORDA_GOIAS).json()
     assert {r["nome"] for r in regras} == {"risco-critico", "risco-alto", "risco-medio"}
     assert all(a["tipo"] == "comando" for r in regras for a in r["acoes"])
 
     novo = {"todas": [{"grandeza": "fumaca", "op": ">=", "valor": 80}, {"grandeza": "umidade", "op": "<", "valor": 15}]}
     cliente.patch("/api/v1/regras/risco-critico", json={"condicao": novo}, headers=BRIGADA)
-    critica = next(r for r in cliente.get("/api/v1/bordas/borda-goias/regras").json() if r["nome"] == "risco-critico")
+    critica = next(
+        r
+        for r in cliente.get("/api/v1/bordas/borda-goias/regras", headers=BORDA_GOIAS).json()
+        if r["nome"] == "risco-critico"
+    )
     assert critica["condicao"] == novo
     original = {
         "todas": [{"grandeza": "fumaca", "op": ">=", "valor": 85}, {"grandeza": "umidade", "op": "<", "valor": 15}]
     }
     cliente.patch("/api/v1/regras/risco-critico", json={"condicao": original}, headers=BRIGADA)
-    assert cliente.get("/api/v1/bordas/nao-existe/regras").status_code == 404
+    assert cliente.get("/api/v1/bordas/nao-existe/regras", headers=BORDA_GOIAS).status_code == 403
 
 
 # ── Assinaturas: da brigada para a prefeitura ────────────────────────────────

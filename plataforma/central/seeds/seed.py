@@ -14,13 +14,15 @@ Uso:  python -m central.seeds.seed
 """
 
 import logging
+import os
 
-from sqlalchemy import Connection, Table, select
+from sqlalchemy import Connection, Table, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from central import db
 from central.config import configuracao
 from central.db import criar_engine
+from nucleo.credenciais import derivar_senha, hash_senha
 
 log = logging.getLogger("central.seed")
 
@@ -138,6 +140,19 @@ def _garantir(conexao: Connection, tabela: Table, chave: dict, valores: dict | N
     return conexao.execute(select(tabela.c.id).where(*filtro)).scalar_one()
 
 
+def _provisionar(conexao: Connection, dispositivo_id, slug: str) -> None:
+    """Credencial dos dispositivos SIMULADOS: derivada do segredo de provisionamento (ver nucleo/credenciais.py)."""
+    segredo = os.getenv("SEGREDO_PROVISIONAMENTO")
+    if not segredo:
+        return
+    d = db.dispositivo
+    conexao.execute(
+        update(d)
+        .where(d.c.id == dispositivo_id, d.c.credencial_hash.is_(None))
+        .values(credencial_hash=hash_senha(derivar_senha(segredo, slug)))
+    )
+
+
 def semear(conexao: Connection) -> None:
     # ── Rural ──
     brigada = _garantir(
@@ -188,7 +203,14 @@ def semear(conexao: Connection) -> None:
                 ],
             )
     for slug, nome in BORDAS.items():
-        _garantir(conexao, db.no_borda, {"slug": slug}, {"inquilino_id": brigada, "nome": nome, "versao": "0.1.0"})
+        borda = _garantir(
+            conexao, db.no_borda, {"slug": slug}, {"inquilino_id": brigada, "nome": nome, "versao": "0.1.0"}
+        )
+        valores = {"sites": sorted(z for z, (*_, b) in ZONAS.items() if b == slug)}
+        credencial = os.getenv(f"CREDENCIAL_{slug.upper().replace('-', '_')}")
+        if credencial:
+            valores["credencial_hash"] = hash_senha(credencial)
+        conexao.execute(update(db.no_borda).where(db.no_borda.c.id == borda).values(**valores))
     for zona, (nome, lat, lon, _borda) in ZONAS.items():
         site = _garantir(
             conexao,
@@ -197,7 +219,7 @@ def semear(conexao: Connection) -> None:
             {"nome": nome, "lat": lat, "lon": lon, "raio_km": 16.7},
         )
         for perfil, (nome_perfil, _intervalo, tipo, padrao, _grandezas) in PERFIS_RURAIS.items():
-            _garantir(
+            dispositivo = _garantir(
                 conexao,
                 db.dispositivo,
                 {"slug": padrao.format(zona=zona)},
@@ -210,6 +232,7 @@ def semear(conexao: Connection) -> None:
                     "fabricante": "simulador",
                 },
             )
+            _provisionar(conexao, dispositivo, padrao.format(zona=zona))
 
     # ── Urbano ──
     for slug, (nome, lat, lon) in PREFEITURAS.items():

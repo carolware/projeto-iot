@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import text
 
 from nucleo import Medida, nova_mensagem
-from tests.central.conftest import ANAPOLIS, BRIGADA
+from tests.central.conftest import ADMIN, ANAPOLIS, BORDA_GOIAS, BRIGADA
 
 
 def leitura(dispositivo="est-mateiros-01", quando=None, temp=30.0, umid=40.0, fumaca=5.0):
@@ -33,11 +33,11 @@ def contar(banco, sql: str, **params) -> int:
 def test_ingestao_http_valida_202_invalida_400_com_erros(cliente, banco):
     """RF-ING-02: válida → 202; inválida → 400 com a lista de erros (e vai para a DLQ, RF-ING-06)."""
     msg = leitura()
-    resposta = cliente.post("/api/v1/ingestao", json=msg)
+    resposta = cliente.post("/api/v1/ingestao", json=msg, headers=ADMIN)
     assert resposta.status_code == 202 and resposta.json()["status"] == "aceita"
 
     invalida = leitura() | {"timestamp": "ontem"}
-    resposta = cliente.post("/api/v1/ingestao", json=invalida)
+    resposta = cliente.post("/api/v1/ingestao", json=invalida, headers=ADMIN)
     assert resposta.status_code == 400
     assert resposta.json()["erros"][0]["campo"] == "timestamp"
     assert contar(banco, "select count(*) from dlq where payload like :p", p=f"%{invalida['id_mensagem']}%") == 1
@@ -46,8 +46,8 @@ def test_ingestao_http_valida_202_invalida_400_com_erros(cliente, banco):
 def test_reenvio_e_armazenado_uma_unica_vez(cliente, banco):
     """RF-ING-08: mensagem reenviada (ex.: pela borda) com o mesmo id é armazenada uma vez."""
     msg = leitura()
-    assert cliente.post("/api/v1/ingestao", json=msg).json()["status"] == "aceita"
-    assert cliente.post("/api/v1/ingestao", json=msg).json()["status"] == "duplicada"
+    assert cliente.post("/api/v1/ingestao", json=msg, headers=ADMIN).json()["status"] == "aceita"
+    assert cliente.post("/api/v1/ingestao", json=msg, headers=ADMIN).json()["status"] == "duplicada"
     assert contar(banco, "select count(*) from telemetria where id_mensagem = :i", i=msg["id_mensagem"]) == 3
 
 
@@ -58,7 +58,7 @@ def test_lote_de_5000_com_3_invalidas(cliente, banco):
     lote[7]["dispositivo"] = "nao-existe"
     lote[2500]["medidas"] = []
     lote[4321]["versao"] = "9.9"
-    resposta = cliente.post("/api/v1/ingestao/lote?via=borda-goias", json={"mensagens": lote})
+    resposta = cliente.post("/api/v1/ingestao/lote?via=borda-goias", json={"mensagens": lote}, headers=BORDA_GOIAS)
     corpo = resposta.json()
     assert resposta.status_code == 200
     assert (corpo["aceitas"], corpo["recusadas"], corpo["duplicadas"]) == (4997, 3, 0)
@@ -67,16 +67,18 @@ def test_lote_de_5000_com_3_invalidas(cliente, banco):
     assert contar(banco, "select count(*) from mensagem where id_mensagem = any(cast(:ids as uuid[]))", ids=ids) == 4997
 
     # sincronização repetida (link caiu no meio do envio): nada duplica
-    repetido = cliente.post("/api/v1/ingestao/lote?via=borda-goias", json={"mensagens": lote}).json()
+    repetido = cliente.post(
+        "/api/v1/ingestao/lote?via=borda-goias", json={"mensagens": lote}, headers=BORDA_GOIAS
+    ).json()
     assert (repetido["aceitas"], repetido["duplicadas"]) == (0, 4997)
 
 
 def test_dado_atrasado_entra_no_lugar_certo_sem_virar_ultimo_estado(cliente):
     """RF-ING-04 / RF-DAD-02: medição de 48 h atrás entra na posição correta e não vira "atual"."""
     agora = datetime.now(UTC).replace(microsecond=0)
-    cliente.post("/api/v1/ingestao", json=leitura("est-formosa-01", agora, temp=25.0))
+    cliente.post("/api/v1/ingestao", json=leitura("est-formosa-01", agora, temp=25.0), headers=ADMIN)
     atrasada = leitura("est-formosa-01", agora - timedelta(hours=48), temp=41.0)
-    assert cliente.post("/api/v1/ingestao", json=atrasada).json()["status"] == "aceita"
+    assert cliente.post("/api/v1/ingestao", json=atrasada, headers=ADMIN).json()["status"] == "aceita"
 
     estado = cliente.get("/api/v1/dispositivos/est-formosa-01/estado", headers=BRIGADA).json()
     assert {lt["grandeza"]: lt["valor"] for lt in estado["leituras"]}["temperatura"] == 25.0
@@ -92,7 +94,7 @@ def test_dado_atrasado_entra_no_lugar_certo_sem_virar_ultimo_estado(cliente):
 def test_mqtt_estado_e_evento_alimentam_gemeo_e_historico(cliente, banco):
     estado = nova_mensagem("est-mirador-01", "estado", dados={"bateria": 87})
     evento = nova_mensagem("est-mirador-01", "evento", dados={"evento": "reinicio"})
-    corpo = cliente.post("/api/v1/ingestao/lote", json={"mensagens": [estado, evento]}).json()
+    corpo = cliente.post("/api/v1/ingestao/lote", json={"mensagens": [estado, evento]}, headers=ADMIN).json()
     assert corpo["aceitas"] == 2
     assert cliente.get("/api/v1/dispositivos/est-mirador-01/estado", headers=BRIGADA).json()["relatado"] == {
         "bateria": 87
@@ -110,7 +112,7 @@ def test_agregacao_horaria_bate_com_os_dados_brutos(cliente):
     lote = [
         leitura("est-novo-progresso-01", hora + timedelta(minutes=10 * i), temp=t) for i, t in enumerate(temperaturas)
     ]
-    cliente.post("/api/v1/ingestao/lote", json={"mensagens": lote})
+    cliente.post("/api/v1/ingestao/lote", json={"mensagens": lote}, headers=ADMIN)
 
     [ponto] = cliente.get(
         "/api/v1/dispositivos/est-novo-progresso-01/telemetria",
@@ -130,7 +132,7 @@ def test_consulta_24h_de_um_dispositivo_responde_rapido(cliente):
     """RF-DAD-01: consulta de 24 h de um dispositivo responde em até 1 s."""
     inicio = (datetime.now(UTC) - timedelta(hours=24)).replace(microsecond=0)
     lote = [leitura("est-sandolandia-01", inicio + timedelta(seconds=30 * i)) for i in range(2880)]
-    cliente.post("/api/v1/ingestao/lote", json={"mensagens": lote})
+    cliente.post("/api/v1/ingestao/lote", json={"mensagens": lote}, headers=ADMIN)
     t0 = datetime.now()
     resposta = cliente.get(
         "/api/v1/dispositivos/est-sandolandia-01/telemetria",
@@ -170,7 +172,7 @@ def test_dominio_novo_so_por_configuracao(cliente):
     }
     assert cliente.post("/api/v1/dispositivos", json=dispositivo, headers=BRIGADA).status_code == 201
     msg = nova_mensagem("bebedouro-mateiros-01", "telemetria", medidas=[Medida("nivel", 64, "%")])
-    assert cliente.post("/api/v1/ingestao", json=msg).status_code == 202
+    assert cliente.post("/api/v1/ingestao", json=msg, headers=ADMIN).status_code == 202
     perfis = cliente.get("/api/v1/catalogo/perfis", params={"dominio": "pecuaria"}, headers=BRIGADA).json()
     assert perfis["itens"][0]["grandezas"][0]["grandeza"] == "nivel"
 
@@ -225,7 +227,7 @@ def test_online_offline_respeita_o_intervalo_do_perfil(cliente):
         )
         cinco_min = datetime.now(UTC) - timedelta(minutes=5)
         msg = nova_mensagem(slug, "telemetria", medidas=[Medida("temperatura", 30, "Cel")], timestamp=cinco_min)
-        assert cliente.post("/api/v1/ingestao", json=msg).status_code == 202
+        assert cliente.post("/api/v1/ingestao", json=msg, headers=ADMIN).status_code == 202
     assert cliente.get("/api/v1/dispositivos/est-horaria-01", headers=BRIGADA).json()["online"] is True
     assert cliente.get("/api/v1/dispositivos/est-rapida-01", headers=BRIGADA).json()["online"] is False
 
@@ -263,7 +265,7 @@ def test_cadastro_duplicado_e_referencia_invalida(cliente):
         "site": "mateiros",
     }
     assert cliente.post("/api/v1/dispositivos", json=sem_perfil, headers=BRIGADA).status_code == 422
-    assert cliente.get("/api/v1/dispositivos", headers={"X-Inquilino": "nao-existe"}).status_code == 404
+    assert cliente.get("/api/v1/dispositivos", headers=ADMIN | {"X-Inquilino": "nao-existe"}).status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -306,10 +308,15 @@ def test_contratos_publicados_por_url(cliente):
 def test_borda_informa_estado_e_painel_mostra_tempo_sem_sincronizar(cliente):
     """RF-EDG-06: o painel mostra há quanto tempo cada nó está sem sincronizar."""
     assert (
-        cliente.put("/api/v1/bordas/borda-goias/estado", json={"fila_pendente": 42, "versao": "0.2.0"}).status_code
+        cliente.put(
+            "/api/v1/bordas/borda-goias/estado", json={"fila_pendente": 42, "versao": "0.2.0"}, headers=BORDA_GOIAS
+        ).status_code
         == 204
     )
-    assert cliente.put("/api/v1/bordas/nao-existe/estado", json={"fila_pendente": 0}).status_code == 404
+    assert (
+        cliente.put("/api/v1/bordas/nao-existe/estado", json={"fila_pendente": 0}, headers=BORDA_GOIAS).status_code
+        == 403
+    )
     bordas = {b["slug"]: b for b in cliente.get("/api/v1/bordas", headers=BRIGADA).json()["itens"]}
     assert bordas["borda-goias"]["fila_pendente"] == 42 and bordas["borda-goias"]["segundos_sem_sincronizar"] < 5
     assert bordas["borda-tocantins"]["segundos_sem_sincronizar"] is None

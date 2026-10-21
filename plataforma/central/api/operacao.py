@@ -5,12 +5,13 @@ auditoria (RF-DAD-06) e situação dos nós de borda (RF-EDG-06).
 
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 
 from central import db
-from central.api.comum import Banco, Contexto, Pagina, ParametrosPagina, paginar
+from central.api.comum import Banco, Pagina, ParametrosPagina, paginar
+from central.api.seguranca import Admin, Borda, Gestao, Leitura
 
 router = APIRouter(prefix="/api/v1", tags=["Operação"])
 
@@ -42,13 +43,18 @@ class NoBorda(BaseModel):
     segundos_sem_sincronizar: float | None
 
 
+class AcessoBorda(BaseModel):
+    senhas: str = Field(description="password_file do Mosquitto (só hashes)")
+    acl: str
+
+
 class EstadoBorda(BaseModel):
     fila_pendente: int = Field(ge=0)
     versao: str | None = None
 
 
 @router.get("/dlq", response_model=Pagina[MensagemInvalida], tags=["Administração"])
-def listar_dlq(banco: Banco, pag: ParametrosPagina, origem: str | None = None):
+def listar_dlq(banco: Banco, admin: Admin, pag: ParametrosPagina, origem: str | None = None):
     q = db.dlq
     consulta = select(q.c.id, q.c.recebido_em, q.c.origem, q.c.motivo, q.c.payload)
     if origem:
@@ -58,7 +64,7 @@ def listar_dlq(banco: Banco, pag: ParametrosPagina, origem: str | None = None):
 
 
 @router.get("/auditoria", response_model=Pagina[RegistroAuditoria])
-def listar_auditoria(banco: Banco, ctx: Contexto, pag: ParametrosPagina, entidade: str | None = None):
+def listar_auditoria(banco: Banco, ctx: Gestao, pag: ParametrosPagina, entidade: str | None = None):
     a = db.auditoria
     consulta = select(a.c.quando, a.c.autor, a.c.entidade, a.c.entidade_id, a.c.acao, a.c.antes, a.c.depois).where(
         a.c.inquilino_id == ctx.id
@@ -73,7 +79,7 @@ def listar_auditoria(banco: Banco, ctx: Contexto, pag: ParametrosPagina, entidad
 
 
 @router.get("/bordas", response_model=Pagina[NoBorda])
-def listar_bordas(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
+def listar_bordas(banco: Banco, ctx: Leitura, pag: ParametrosPagina):
     b = db.no_borda
     consulta = select(
         b.c.slug,
@@ -88,8 +94,7 @@ def listar_bordas(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
 
 
 @router.put("/bordas/{slug}/estado", status_code=204, summary="Nó de borda informa fila pendente e versão")
-def informar_estado_borda(banco: Banco, slug: str, estado: EstadoBorda):
-    # autenticação do nó por credencial própria entra na etapa A4 (RF-SEG-05)
+def informar_estado_borda(banco: Banco, borda: Borda, slug: str, estado: EstadoBorda):
     b = db.no_borda
     with banco.begin() as conexao:
         alterados = conexao.execute(
@@ -97,3 +102,11 @@ def informar_estado_borda(banco: Banco, slug: str, estado: EstadoBorda):
         ).rowcount
     if not alterados:
         raise HTTPException(404, f"nó de borda {slug!r} não cadastrado")
+
+
+@router.get("/bordas/{slug}/acesso", response_model=AcessoBorda, summary="Credenciais e ACL do broker local da borda")
+def acesso_da_borda(request: Request, borda: Borda, slug: str):
+    arquivos = request.app.state.acesso.da_borda(slug)
+    if arquivos is None:
+        raise HTTPException(404, f"nó de borda {slug!r} sem credencial")
+    return {"senhas": arquivos[0], "acl": arquivos[1]}

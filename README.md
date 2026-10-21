@@ -56,7 +56,7 @@ No contexto da disciplina de Internet das Coisas, o presente trabalho propõe um
 | **Python 3** | Backend/edge | Implementa o coletor de telemetria, o gateway e o atuador. |
 | **requests** | Integração HTTP | Consulta os endpoints REST da Open-Meteo e da NASA FIRMS. |
 | **python-dotenv** | Configuração | Carrega broker, namespace MQTT, chave FIRMS, raios e intervalos a partir do `.env`. |
-| **paho-mqtt** | Mensageria backend | Publica e consome mensagens MQTT sobre TCP na porta 1883. |
+| **paho-mqtt** | Mensageria backend | Publica e consome mensagens MQTT sobre TLS (porta 8883). |
 | **Open-Meteo** | Fonte externa | Fornece temperatura e umidade atuais estimadas para as coordenadas monitoradas, sem exigir chave. |
 | **NASA FIRMS / VIIRS** | Fonte orbital | Fornece focos de calor, coordenadas e FRP em tempo quase real; não mede diretamente fumaça ou temperatura do ar. |
 | **Eclipse Mosquitto** | Infraestrutura MQTT | Broker próprio (`mosquitto-central` no compose) que intermedeia o publish/subscribe; substitui o HiveMQ público usado na 1ª entrega. |
@@ -231,7 +231,7 @@ MQTT (*Message Queuing Telemetry Transport*) é um protocolo de mensageria publi
 | Parâmetro     | Valor             | Justificativa                           |
 |---------------|-------------------|-----------------------------------------|
 | Broker        | Eclipse Mosquitto (central + um por borda) | Brokers próprios, ver `plataforma/infra/mosquitto` |
-| Porta         | 1883              | TCP sem TLS (ambiente de desenvolvimento)|
+| Porta         | 8883 (TLS)        | Sem acesso anônimo; credencial e ACL por dispositivo |
 | QoS (sensor)  | 0 (at most once)  | Dados de telemetria — perda ocasional aceitável |
 | QoS (alerta)  | 1 (at least once) | Broker confirma o recebimento; pode haver duplicação |
 | Keep-alive    | 60 s              | Detecção de desconexão dentro de 1 minuto |
@@ -320,7 +320,7 @@ python plataforma/simuladores/demo/cadastrar_alerta_publico.py
 #    alerta às prefeituras dentro do raio — os terminais (Go) exibem e reconhecem
 python plataforma/simuladores/mock_incendio.py on pirenopolis
 docker compose logs -f borda-goias central terminais
-curl -s 'localhost:8000/api/v1/alarmes?abertos=true' -H 'X-Inquilino: pref-anapolis'
+curl -s 'localhost:8000/api/v1/alarmes?abertos=true' -H "Authorization: Bearer $TOKEN_ANAPOLIS"  # token de gestor.anapolis (ver 5.3.3)
 
 # 3. Fim do incêndio: o alarme resolve sozinho, as entregas também, e os
 #    terminais recebem "alerta encerrado"
@@ -334,7 +334,7 @@ curl -s localhost:9101/metrics | grep borda_fila_pendente      # fila crescendo
 # 5. Link volta: a fila é sincronizada em lotes, sem perda nem duplicata, e o
 #    alarme aparece na central com o horário em que ocorreu
 sh plataforma/simuladores/demo/link.sh on tocantins
-curl -s 'localhost:8000/api/v1/alarmes?dispositivo=est-lagoa-da-confusao-01' -H 'X-Inquilino: brigada-cerrado'
+curl -s 'localhost:8000/api/v1/alarmes?dispositivo=est-lagoa-da-confusao-01' -H "Authorization: Bearer $TOKEN"
 python plataforma/simuladores/mock_incendio.py off
 
 # 6. Zona sem borda (Mirador): quem decide é a central, que comanda o atuador
@@ -360,14 +360,38 @@ API em `http://localhost:8000`:
   `http://localhost:8000/contratos/mensagem-canonica.v1.schema.json`
 - Ingestão: `POST /api/v1/ingestao` e `POST /api/v1/ingestao/lote`; também
   assina MQTT nos tópicos `{inquilino}/{site}/{dominio}/{dispositivo}/{telemetria|evento|estado}`
-- Rotas por inquilino exigem o cabeçalho `X-Inquilino` (ex.: `brigada-cerrado`,
-  `pref-anapolis`) — provisório até a autenticação OIDC (etapa A4)
+- Rotas protegidas por token OIDC do Keycloak (ver 5.3.3); bordas e
+  dispositivos usam a própria credencial (HTTP Basic)
 
 ```bash
-curl -X POST localhost:8000/api/v1/ingestao -H 'content-type: application/json' \
-     --data @plataforma/contratos/exemplos/telemetria-estacao.json
-curl localhost:8000/api/v1/dispositivos/est-mateiros-01/estado -H 'X-Inquilino: brigada-cerrado'
+TOKEN=$(curl -s localhost:8080/realms/sentinela/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=cli -d username=gestor.brigada -d password=sentinela | jq -r .access_token)
+curl -X POST localhost:8000/api/v1/ingestao -H "Authorization: Bearer $TOKEN" \
+     -H 'content-type: application/json' --data @plataforma/contratos/exemplos/telemetria-estacao.json
+curl localhost:8000/api/v1/dispositivos/est-mateiros-01/estado -H "Authorization: Bearer $TOKEN"
 ```
+
+### 5.3.3 Segurança e acesso
+
+| Onde | Como |
+|---|---|
+| **MQTT** | Só TLS 1.2+ (8883 central, 8884 borda Tocantins, 8885 borda Goiás), com a CA própria gerada pelo serviço `pki` em `plataforma/infra/pki/gerado/` (fora do git). Sem acesso anônimo. |
+| **Dispositivos** | Credencial própria por dispositivo (a plataforma guarda só o hash) e ACL gerada pela central: cada um só publica nos próprios tópicos e só recebe o próprio `/comando`. Revogar pela API (`POST /api/v1/dispositivos/{slug}/revogar`) recusa a conexão seguinte na central e, após a sincronização (≤ 30 s), nos nós de borda. |
+| **Dispositivos simulados** | Sem fábrica para gravar a credencial no aparelho, ela é derivada de `SEGREDO_PROVISIONAMENTO` (HMAC). Dispositivos cadastrados pela API recebem credencial aleatória, mostrada uma única vez. |
+| **Nós de borda** | Credencial própria (`CREDENCIAL_BORDA_*`) para a API (HTTP Basic) e para a bridge; baixam da central as senhas/ACL do broker local e as mantêm no disco (autenticam sem link). Fila local cifrada (`BORDA_CHAVE_*`). |
+| **Pessoas** | Keycloak em `http://localhost:8080` (realm `sentinela`). Papéis: admin, gestor, operador, integrador, leitor; o inquilino vai no token. O admin precisa configurar TOTP no primeiro acesso. |
+
+Usuários de demonstração (senha `sentinela`, **só desenvolvimento**):
+`gestor.brigada`, `operador.brigada`, `integrador.brigada`, `leitor.brigada`,
+`gestor.anapolis`, `gestor.formosa`, `gestor.pirenopolis`, `gestor.jaragua`,
+`operador.anapolis` e `admin` (este exige TOTP). O cliente `cli` (password
+grant) existe só para scripts; o painel usa o cliente `painel` (PKCE).
+
+Os segredos de desenvolvimento ficam no `.env` (modelo em `.env.example`;
+troque todos fora da sua máquina). O WebSocket 9001 do painel antigo é
+autenticado (usuário `painel`, só leitura dos tópicos legados) e sem TLS —
+provisório até a etapa A5. Observação: o Mosquitto 2.0 confirma (SUBACK) a
+assinatura de um tópico proibido, mas não entrega nenhuma mensagem dele.
 
 Testes (unidade + integração; os de integração usam o TimescaleDB do compose
 num banco descartável `sentinela_teste` e são pulados se ele estiver fora do ar):
@@ -385,14 +409,14 @@ npm run dev
 # Acesse o endereço indicado pelo Vite (neste projeto, normalmente http://localhost:8080)
 ```
 
-O frontend possui configuração própria em `front/.env`. O navegador não utiliza a porta MQTT TCP 1883; ele se conecta ao endpoint WSS definido por `VITE_MQTT_URL`. O valor de `VITE_MQTT_TOPIC_BASE` deve ser idêntico ao `MQTT_TOPIC_BASE` do `.env` localizado na raiz.
+O frontend possui configuração própria em `front/.env`. O navegador não usa a porta MQTT/TLS 8883; ele se conecta pelo WebSocket definido em `VITE_MQTT_URL`, com o usuário `VITE_MQTT_USUARIO`/`VITE_MQTT_SENHA` (provisório até a A5). O valor de `VITE_MQTT_TOPIC_BASE` deve ser idêntico ao `MQTT_TOPIC_BASE` do `.env` localizado na raiz.
 
 ### 5.5 Variáveis de Ambiente
 
 | Variável             | Padrão              | Descrição                                |
 |----------------------|---------------------|------------------------------------------|
 | `MQTT_BROKER`        | localhost           | Endereço do broker MQTT (o compose sobrescreve por serviço) |
-| `MQTT_PORT`          | 1883                | Porta TCP do broker                      |
+| `MQTT_PORT`          | 8883                | Porta MQTT/TLS do broker                 |
 | `MQTT_TOPIC_BASE`    | sentinela-iot-2026-joao-carol/monitoramento-br | Namespace isolado do projeto |
 | `FIRMS_MAP_KEY`      | —                   | **Obrigatório**: chave de acesso NASA FIRMS |
 | `FIRMS_SOURCE`       | VIIRS_SNPP_NRT      | Fonte de dados orbital                   |
@@ -430,8 +454,9 @@ python plataforma/simuladores/mock_incendio.py off
 ```
 
 O script publica no tópico de controle `simulacao/mock` do broker por onde a
-zona fala com a plataforma (borda da região, portas 1884/1885 na máquina, ou a
-central, 1883) e também no da central, onde o conector FIRMS escuta. Com
+zona fala com a plataforma (borda da região, portas 8884/8885 na máquina, ou a
+central, 8883 — sempre TLS, como usuário `simulacao`, senha `MQTT_SENHA_SIMULACAO`
+do `.env`) e também no da central, onde o conector FIRMS escuta. Com
 `lat`/`lon`, a coordenada vai no campo `local.geo` das mensagens da estação e o
 conector **fabrica uma detecção de satélite** exatamente ali, publicada na hora.
 A coordenada precisa cair dentro do raio de busca FIRMS da zona

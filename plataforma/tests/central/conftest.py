@@ -6,24 +6,69 @@ não houver servidor acessível, os testes são pulados. No CI, o banco vem de u
 service container (ver .github/workflows/ci.yml).
 """
 
+import base64
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import jwt
 import pytest
 from alembic import command
 from alembic.config import Config
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 
 from central.acoes import AcaoWebhook
+from central.api.seguranca import Autenticador
 from central.app import criar_app
 from central.config import Configuracao, configuracao
 from central.seeds.seed import semear
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "central" / "alembic.ini"
+
+# ── Identidade de teste: tokens no formato do Keycloak, assinados por uma chave local ──
+EMISSOR = "http://keycloak.teste/realms/sentinela"
+AUDIENCIA = "sentinela-api"
+_CHAVE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+SEGREDO_PROVISIONAMENTO = "segredo-de-teste"
+CREDENCIAIS_BORDA = {
+    "borda-tocantins": "credencial-borda-tocantins-teste",
+    "borda-goias": "credencial-borda-goias-teste",
+}
+os.environ["SEGREDO_PROVISIONAMENTO"] = SEGREDO_PROVISIONAMENTO
+for _slug, _credencial in CREDENCIAIS_BORDA.items():
+    os.environ[f"CREDENCIAL_{_slug.upper().replace('-', '_')}"] = _credencial
+
+
+def token(usuario: str, inquilino: str | None, *papeis: str, expira_em: int = 300, **extra) -> str:
+    claims = {
+        "iss": EMISSOR,
+        "aud": AUDIENCIA,
+        "sub": usuario,
+        "preferred_username": usuario,
+        "exp": int(time.time()) + expira_em,
+        "realm_access": {"roles": list(papeis)},
+    } | ({"inquilino": inquilino} if inquilino else {})
+    return jwt.encode(claims | extra, _CHAVE, algorithm="RS256")
+
+
+def bearer(*args, **kwargs) -> dict:
+    return {"Authorization": f"Bearer {token(*args, **kwargs)}"}
+
+
+def basic(usuario: str, senha: str) -> dict:
+    return {"Authorization": "Basic " + base64.b64encode(f"{usuario}:{senha}".encode()).decode()}
+
+
+BRIGADA = bearer("teste@sentinela", "brigada-cerrado", "gestor")
+ANAPOLIS = bearer("operador@anapolis", "pref-anapolis", "gestor")
+ADMIN = bearer("admin@sentinela", None, "admin")
+BORDA_GOIAS = basic("borda-goias", CREDENCIAIS_BORDA["borda-goias"])
 
 
 def _url_teste() -> str:
@@ -93,6 +138,7 @@ def cliente(url_banco, publicadas, webhook):
         publicar=lambda topico, carga: publicadas.append((topico, carga)),
         estrategias={"webhook": AcaoWebhook(post=webhook)},
         motor_em_segundo_plano=False,  # regras processadas na hora: asserções determinísticas
+        autenticador=Autenticador(EMISSOR, AUDIENCIA, chave_publica=_CHAVE.public_key()),
     )
     with TestClient(app) as cliente:
         yield cliente
@@ -103,7 +149,3 @@ def banco(url_banco):
     engine = create_engine(url_banco)
     yield engine
     engine.dispose()
-
-
-BRIGADA = {"X-Inquilino": "brigada-cerrado", "X-Usuario": "teste@sentinela"}
-ANAPOLIS = {"X-Inquilino": "pref-anapolis", "X-Usuario": "operador@anapolis"}

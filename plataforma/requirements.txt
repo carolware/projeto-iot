@@ -13,3 +13,6 @@ alembic==1.20.0
 # borda (fog)
 cryptography==50.0.2
 prometheus-client==0.26.0
+
+# identidade (tokens OIDC)
+pyjwt[crypto]==2.15.1

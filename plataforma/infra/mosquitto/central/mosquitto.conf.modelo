@@ -1,0 +1,29 @@
+# Broker da instância central (cloud).
+# Sem acesso anônimo: cada dispositivo/serviço tem credencial própria e uma ACL
+# que restringe os tópicos (gerados pela central em /mosquitto/acesso).
+
+persistence true
+persistence_location /mosquitto/data/
+log_dest stdout
+log_type error
+log_type warning
+log_type notice
+
+per_listener_settings false
+allow_anonymous false
+password_file /mosquitto/acesso/senhas
+acl_file /mosquitto/acesso/acl
+
+# MQTT sobre TLS 1.2+ (dispositivos diretos, bridges das bordas, serviços)
+listener 8883
+protocol mqtt
+cafile /pki/ca.crt
+certfile /pki/mosquitto-central.crt
+keyfile /pki/mosquitto-central.key
+tls_version tlsv1.2
+
+# WebSocket do painel antigo (TEMPORÁRIO até a etapa A5): autenticado e só
+# leitura de tópicos legados; sem TLS porque o navegador não confiaria na CA
+# própria em localhost.
+listener 9001
+protocol websockets

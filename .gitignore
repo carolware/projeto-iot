@@ -19,3 +19,6 @@ __pycache__/
 .coverage
 .ruff_cache/
 *.egg-info/
+
+# PKI gerada localmente (chave da CA nunca vai para o git)
+plataforma/infra/pki/gerado/

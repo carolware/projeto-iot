@@ -13,9 +13,14 @@ COPY . .
 ARG VITE_DATA_MODE=mqtt
 ARG VITE_MQTT_URL=ws://localhost:9001
 ARG VITE_MQTT_TOPIC_BASE=sentinela-iot-2026-joao-carol/monitoramento-br
+# usuário "painel" do broker: só lê os tópicos legados (TEMPORÁRIO até a A5)
+ARG VITE_MQTT_USUARIO=
+ARG VITE_MQTT_SENHA=
 ENV VITE_DATA_MODE=$VITE_DATA_MODE \
     VITE_MQTT_URL=$VITE_MQTT_URL \
-    VITE_MQTT_TOPIC_BASE=$VITE_MQTT_TOPIC_BASE
+    VITE_MQTT_TOPIC_BASE=$VITE_MQTT_TOPIC_BASE \
+    VITE_MQTT_USUARIO=$VITE_MQTT_USUARIO \
+    VITE_MQTT_SENHA=$VITE_MQTT_SENHA
 
 # Fora do sandbox do Lovable, NITRO_PRESET sobrepõe o default (cloudflare-module)
 # do plugin @lovable.dev/vite-tanstack-config, gerando um server Node comum.

@@ -4,6 +4,10 @@
 #   rede campo-goias:      estações + atuadores ── mosquitto-borda-goias ───── borda-goias ─────┤ rede nuvem
 #   zonas sem borda (PA/MA) e terminais das prefeituras falam direto com a central ───────────────┘
 #
+# Segurança (etapa A4): todo MQTT é TLS 1.2+ com a CA própria (gerada pelo serviço
+# `pki`), sem acesso anônimo, com credencial e ACL por dispositivo; usuários entram
+# pelo Keycloak (OIDC). Segredos de desenvolvimento ficam no .env (ver .env.example).
+#
 # Para simular a queda do link de uma fazenda:  sh plataforma/simuladores/demo/link.sh off tocantins
 
 x-plataforma: &plataforma
@@ -12,18 +16,43 @@ x-plataforma: &plataforma
     context: ./plataforma
   restart: unless-stopped
 
+# cliente MQTT sobre TLS: verifica o broker pela CA da plataforma
+x-tls: &tls
+  MQTT_PORT: "8883"
+  MQTT_CA: /pki/ca.crt
+
+x-mosquitto: &mosquitto
+  image: eclipse-mosquitto:2.0.20
+  entrypoint: ["/bin/sh", "/iniciar.sh"]   # sobe o broker e recarrega quando senhas/ACL mudam
+  restart: unless-stopped
+  depends_on:
+    pki:
+      condition: service_completed_successfully
+
 services:
+  # ── Inicialização: CA própria e certificados dos brokers ───────────────────
+  pki:
+    <<: *plataforma
+    restart: "no"
+    command: ["python", "/app/gerar_pki.py", "--saida", "/pki",
+              "mosquitto-central", "mosquitto-borda-tocantins", "mosquitto-borda-goias"]
+    volumes:
+      - ./plataforma/infra/pki/gerar.py:/app/gerar_pki.py:ro
+      - ./plataforma/infra/pki/gerado:/pki
+
   # ── Cloud: instância central ───────────────────────────────────────────────
   mosquitto-central:
-    image: eclipse-mosquitto:2.0.20
+    <<: *mosquitto
     ports:
-      - "1883:1883"   # MQTT (dispositivos diretos, bridges das bordas, scripts locais)
-      - "9001:9001"   # MQTT sobre WebSocket (navegador)
+      - "8883:8883"   # MQTT/TLS (dispositivos diretos, bridges das bordas, scripts locais)
+      - "9001:9001"   # MQTT/WebSocket do painel antigo (TEMPORÁRIO até a A5)
     volumes:
-      - ./plataforma/infra/mosquitto/central/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./plataforma/infra/mosquitto/iniciar.sh:/iniciar.sh:ro
+      - ./plataforma/infra/mosquitto/central/mosquitto.conf.modelo:/mosquitto/config/mosquitto.conf.modelo:ro
+      - ./plataforma/infra/pki/gerado:/pki:ro
+      - acesso-central:/mosquitto/acesso       # senhas/ACL escritas pela central
       - mosquitto-central-data:/mosquitto/data
     networks: [nuvem]
-    restart: unless-stopped
 
   postgres:
     image: timescale/timescaledb:2.17.2-pg16
@@ -43,6 +72,22 @@ services:
     networks: [nuvem]
     restart: unless-stopped
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_SENHA:-admin}
+      KC_HOSTNAME: http://localhost:8080        # emissor dos tokens (o navegador acessa por aqui)
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"    # a central busca as chaves por keycloak:8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./plataforma/infra/keycloak/sentinela-realm.json:/opt/keycloak/data/import/sentinela-realm.json:ro
+      - keycloak-dados:/opt/keycloak/data   # usuários e TOTP configurados persistem
+    networks: [nuvem]
+    restart: unless-stopped
+
   central:
     <<: *plataforma
     # migrations + seed (idempotentes) antes de subir a API
@@ -51,12 +96,29 @@ services:
       && python -m central.seeds.seed
       && uvicorn central.app:app --host 0.0.0.0 --port 8000"
     environment:
+      <<: *tls
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinela}:${POSTGRES_PASSWORD:-sentinela}@postgres:5432/${POSTGRES_DB:-sentinela}
       MQTT_BROKER: mosquitto-central
-      MQTT_PORT: "1883"
+      MQTT_USUARIO: central
+      MQTT_SENHA: ${MQTT_SENHA_CENTRAL:?defina no .env}
       CENTRAL_MQTT_CLIENT_ID: central-ingestao   # sessão persistente no broker
+      MQTT_ACESSO_DIR: /acesso
+      # senhas dos usuários de serviço do broker (a central grava só os hashes)
+      MQTT_SENHA_CENTRAL: ${MQTT_SENHA_CENTRAL}
+      MQTT_SENHA_PONTE: ${MQTT_SENHA_PONTE:?defina no .env}
+      MQTT_SENHA_PAINEL: ${MQTT_SENHA_PAINEL:?defina no .env}
+      MQTT_SENHA_SIMULACAO: ${MQTT_SENHA_SIMULACAO:?defina no .env}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-sentinela-iot-2026-joao-carol/monitoramento-br}
+      SEGREDO_PROVISIONAMENTO: ${SEGREDO_PROVISIONAMENTO:?defina no .env}
+      CREDENCIAL_BORDA_TOCANTINS: ${CREDENCIAL_BORDA_TOCANTINS:?defina no .env}
+      CREDENCIAL_BORDA_GOIAS: ${CREDENCIAL_BORDA_GOIAS:?defina no .env}
+      OIDC_EMISSOR: http://localhost:8080/realms/sentinela
+      OIDC_JWKS_URL: http://keycloak:8080/realms/sentinela/protocol/openid-connect/certs
     ports:
       - "8000:8000"   # API REST + Swagger em /docs
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
+      - acesso-central:/acesso
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,76 +131,97 @@ services:
     command: ["python", "simuladores/conector_firms/conector.py"]
     env_file: .env
     environment:
+      <<: *tls
       MQTT_BROKER: mosquitto-central
-      MQTT_PORT: "1883"
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-central]
     networks: [nuvem]
 
   # ── Fog: nós de borda (um por região rural) ────────────────────────────────
   mosquitto-borda-tocantins:
-    image: eclipse-mosquitto:2.0.20
+    <<: *mosquitto
+    environment:
+      BRIDGE_SENHA: ${CREDENCIAL_BORDA_TOCANTINS}
     ports:
-      - "1884:1883"
+      - "8884:8883"
     volumes:
-      - ./plataforma/infra/mosquitto/borda-tocantins/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./plataforma/infra/mosquitto/iniciar.sh:/iniciar.sh:ro
+      - ./plataforma/infra/mosquitto/borda-tocantins/mosquitto.conf.modelo:/mosquitto/config/mosquitto.conf.modelo:ro
+      - ./plataforma/infra/pki/gerado:/pki:ro
+      - acesso-borda-tocantins:/mosquitto/acesso   # senhas/ACL baixadas da central pela borda
       - mosquitto-borda-tocantins-data:/mosquitto/data
-    depends_on: [mosquitto-central]
     networks: [campo-tocantins, nuvem]
-    restart: unless-stopped
 
   borda-tocantins:
     <<: *plataforma
     command: ["python", "-m", "borda.app"]
     environment:
+      <<: *tls
       BORDA_ID: borda-tocantins
       BORDA_SITES: mateiros,lagoa-da-confusao,sandolandia
+      BORDA_CREDENCIAL: ${CREDENCIAL_BORDA_TOCANTINS}
       BORDA_CHAVE: ${BORDA_CHAVE_TOCANTINS:?defina BORDA_CHAVE_TOCANTINS no .env}
       BORDA_FILA: /dados/fila.db
+      BORDA_ACESSO_DIR: /acesso
       MQTT_BROKER: mosquitto-borda-tocantins
       CENTRAL_URL: http://central:8000
     ports:
       - "9101:9100"   # métricas Prometheus
     volumes:
       - borda-tocantins-dados:/dados
+      - acesso-borda-tocantins:/acesso
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-borda-tocantins, central]
     networks: [campo-tocantins, nuvem]
 
   mosquitto-borda-goias:
-    image: eclipse-mosquitto:2.0.20
+    <<: *mosquitto
+    environment:
+      BRIDGE_SENHA: ${CREDENCIAL_BORDA_GOIAS}
     ports:
-      - "1885:1883"
+      - "8885:8883"
     volumes:
-      - ./plataforma/infra/mosquitto/borda-goias/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./plataforma/infra/mosquitto/iniciar.sh:/iniciar.sh:ro
+      - ./plataforma/infra/mosquitto/borda-goias/mosquitto.conf.modelo:/mosquitto/config/mosquitto.conf.modelo:ro
+      - ./plataforma/infra/pki/gerado:/pki:ro
+      - acesso-borda-goias:/mosquitto/acesso
       - mosquitto-borda-goias-data:/mosquitto/data
-    depends_on: [mosquitto-central]
     networks: [campo-goias, nuvem]
-    restart: unless-stopped
 
   borda-goias:
     <<: *plataforma
     command: ["python", "-m", "borda.app"]
     environment:
+      <<: *tls
       BORDA_ID: borda-goias
       BORDA_SITES: anapolis,formosa,pirenopolis,jaragua
+      BORDA_CREDENCIAL: ${CREDENCIAL_BORDA_GOIAS}
       BORDA_CHAVE: ${BORDA_CHAVE_GOIAS:?defina BORDA_CHAVE_GOIAS no .env}
       BORDA_FILA: /dados/fila.db
+      BORDA_ACESSO_DIR: /acesso
       MQTT_BROKER: mosquitto-borda-goias
       CENTRAL_URL: http://central:8000
     ports:
       - "9102:9100"
     volumes:
       - borda-goias-dados:/dados
+      - acesso-borda-goias:/acesso
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-borda-goias, central]
     networks: [campo-goias, nuvem]
 
-  # ── Edge: dispositivos simulados ───────────────────────────────────────────
+  # ── Edge: dispositivos simulados (credencial de cada um derivada de SEGREDO_PROVISIONAMENTO) ──
   estacoes-tocantins:
     <<: *plataforma
     command: ["python", "simuladores/estacao/sensor.py"]
     env_file: .env
     environment:
+      <<: *tls
       ZONAS: mateiros,lagoa-da-confusao,sandolandia
       MQTT_BROKER: mosquitto-borda-tocantins
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-borda-tocantins]
     networks: [campo-tocantins]
 
@@ -147,8 +230,11 @@ services:
     command: ["python", "simuladores/atuador/atuador.py"]
     env_file: .env
     environment:
+      <<: *tls
       ZONAS: mateiros,lagoa-da-confusao,sandolandia
       MQTT_BROKER: mosquitto-borda-tocantins
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-borda-tocantins]
     networks: [campo-tocantins]
 
@@ -157,8 +243,11 @@ services:
     command: ["python", "simuladores/estacao/sensor.py"]
     env_file: .env
     environment:
+      <<: *tls
       ZONAS: anapolis,formosa,pirenopolis,jaragua
       MQTT_BROKER: mosquitto-borda-goias
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-borda-goias]
     networks: [campo-goias]
 
@@ -167,8 +256,11 @@ services:
     command: ["python", "simuladores/atuador/atuador.py"]
     env_file: .env
     environment:
+      <<: *tls
       ZONAS: anapolis,formosa,pirenopolis,jaragua
       MQTT_BROKER: mosquitto-borda-goias
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-borda-goias]
     networks: [campo-goias]
 
@@ -178,8 +270,11 @@ services:
     command: ["python", "simuladores/estacao/sensor.py"]
     env_file: .env
     environment:
+      <<: *tls
       ZONAS: novo-progresso,mirador
       MQTT_BROKER: mosquitto-central
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-central]
     networks: [nuvem]
 
@@ -188,8 +283,11 @@ services:
     command: ["python", "simuladores/atuador/atuador.py"]
     env_file: .env
     environment:
+      <<: *tls
       ZONAS: novo-progresso,mirador
       MQTT_BROKER: mosquitto-central
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-central]
     networks: [nuvem]
 
@@ -200,10 +298,14 @@ services:
       context: ./plataforma
       dockerfile: simuladores/terminal_go/Dockerfile
     environment:
+      <<: *tls
       MQTT_BROKER: mosquitto-central
+      SEGREDO_PROVISIONAMENTO: ${SEGREDO_PROVISIONAMENTO}
       AUTO_RECONHECER_S: "20"
       TERMINAIS: >-
         pref-anapolis/defesa-civil/alerta_publico/terminal-dc-anapolis,pref-anapolis/bombeiros/alerta_publico/terminal-bm-anapolis,pref-formosa/defesa-civil/alerta_publico/terminal-dc-formosa,pref-formosa/bombeiros/alerta_publico/terminal-bm-formosa,pref-pirenopolis/defesa-civil/alerta_publico/terminal-dc-pirenopolis,pref-pirenopolis/bombeiros/alerta_publico/terminal-bm-pirenopolis,pref-jaragua/defesa-civil/alerta_publico/terminal-dc-jaragua,pref-jaragua/bombeiros/alerta_publico/terminal-bm-jaragua
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-central]
     networks: [nuvem]
     restart: unless-stopped
@@ -215,7 +317,12 @@ services:
     command: ["python", "-m", "legado.ponte_front"]
     env_file: .env
     environment:
+      <<: *tls
       MQTT_BROKER: mosquitto-central
+      MQTT_USUARIO: ponte
+      MQTT_SENHA: ${MQTT_SENHA_PONTE}
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-central]
     networks: [nuvem]
 
@@ -225,6 +332,9 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_MQTT_URL: ${VITE_MQTT_URL:-ws://localhost:9001}
+        # usuário "painel": só lê os tópicos legados (TEMPORÁRIO até a A5 levar o front para OIDC + API)
+        VITE_MQTT_USUARIO: painel
+        VITE_MQTT_SENHA: ${MQTT_SENHA_PAINEL}
     ports:
       - "3000:3000"
     depends_on: [mosquitto-central]
@@ -240,6 +350,10 @@ volumes:
   mosquitto-central-data:
   mosquitto-borda-tocantins-data:
   mosquitto-borda-goias-data:
+  acesso-central:
+  acesso-borda-tocantins:
+  acesso-borda-goias:
   borda-tocantins-dados:
   borda-goias-dados:
   postgres-data:
+  keycloak-dados:

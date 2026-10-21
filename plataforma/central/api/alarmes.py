@@ -13,7 +13,8 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from central import db
-from central.api.comum import Banco, Contexto, Pagina, ParametrosPagina, Slug, auditar, conflito_ou_erro, paginar
+from central.api.comum import Banco, Pagina, ParametrosPagina, Slug, auditar, conflito_ou_erro, paginar
+from central.api.seguranca import Gestao, Leitura, Operacao
 from central.motor import consulta_alarmes, formatar_alarme
 
 router = APIRouter(prefix="/api/v1", tags=["Alarmes"])
@@ -105,7 +106,7 @@ def _do_inquilino(banco, ctx, alarme_id: str) -> dict:
 @router.get("/alarmes", response_model=Pagina[Alarme])
 def listar(
     banco: Banco,
-    ctx: Contexto,
+    ctx: Leitura,
     pag: ParametrosPagina,
     estado: Estado | None = None,
     abertos: bool | None = None,
@@ -133,7 +134,7 @@ def listar(
 
 
 @router.get("/alarmes/{alarme_id}", response_model=AlarmeDetalhe)
-def obter(banco: Banco, ctx: Contexto, alarme_id: str):
+def obter(banco: Banco, ctx: Leitura, alarme_id: str):
     alarme = _do_inquilino(banco, ctx, alarme_id)
     a, i, e, c, d = db.alarme, db.inquilino, db.execucao_acao, db.comando, db.dispositivo
     ident = uuid.UUID(alarme["id"])
@@ -176,7 +177,7 @@ def obter(banco: Banco, ctx: Contexto, alarme_id: str):
 
 
 @router.post("/alarmes/{alarme_id}/reconhecer", response_model=Alarme)
-def reconhecer(request: Request, banco: Banco, ctx: Contexto, alarme_id: str, entrada: Transicao | None = None):
+def reconhecer(request: Request, banco: Banco, ctx: Operacao, alarme_id: str, entrada: Transicao | None = None):
     alarme = _do_inquilino(banco, ctx, alarme_id)
     if alarme["estado"] != "ativo":
         raise HTTPException(409, f"alarme está {alarme['estado']}: só um alarme ativo pode ser reconhecido")
@@ -195,7 +196,7 @@ def reconhecer(request: Request, banco: Banco, ctx: Contexto, alarme_id: str, en
 
 
 @router.post("/alarmes/{alarme_id}/resolver", response_model=Alarme)
-def resolver(request: Request, banco: Banco, ctx: Contexto, alarme_id: str, entrada: Transicao | None = None):
+def resolver(request: Request, banco: Banco, ctx: Operacao, alarme_id: str, entrada: Transicao | None = None):
     alarme = _do_inquilino(banco, ctx, alarme_id)
     if alarme["estado"] == "resolvido":
         raise HTTPException(409, "alarme já está resolvido")
@@ -235,7 +236,7 @@ def _assinaturas(banco, ctx, ident: uuid.UUID | None = None) -> list[dict]:
 
 
 @router.get("/assinaturas", response_model=Pagina[Assinatura], tags=["Alarmes"])
-def listar_assinaturas(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
+def listar_assinaturas(banco: Banco, ctx: Leitura, pag: ParametrosPagina):
     itens = _assinaturas(banco, ctx)
     inicio = (pag.pagina - 1) * pag.tamanho
     return {
@@ -247,7 +248,7 @@ def listar_assinaturas(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
 
 
 @router.post("/assinaturas", status_code=201, response_model=Assinatura, tags=["Alarmes"])
-def criar_assinatura(banco: Banco, ctx: Contexto, entrada: AssinaturaEntrada):
+def criar_assinatura(banco: Banco, ctx: Gestao, entrada: AssinaturaEntrada):
     valores = entrada.model_dump()
     valores["dominio_slug"] = valores.pop("dominio")
     try:
@@ -262,7 +263,7 @@ def criar_assinatura(banco: Banco, ctx: Contexto, entrada: AssinaturaEntrada):
 
 
 @router.patch("/assinaturas/{assinatura_id}", response_model=Assinatura, tags=["Alarmes"])
-def ativar_assinatura(banco: Banco, ctx: Contexto, assinatura_id: uuid.UUID, ativa: bool):
+def ativar_assinatura(banco: Banco, ctx: Gestao, assinatura_id: uuid.UUID, ativa: bool):
     s = db.assinatura_alerta
     with banco.begin() as conexao:
         alterada = conexao.execute(

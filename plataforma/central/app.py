@@ -15,13 +15,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
+from central.acesso_mqtt import GestorAcesso, servicos_da_central
 from central.acoes import AcaoComando, AcaoNotificar, AcaoPublicar, AcaoWebhook, ExecutorAcoes, Publicador
 from central.api import alarmes, catalogo, dispositivos, ingestao, operacao, regras
+from central.api.seguranca import Autenticador
 from central.config import Configuracao, configuracao
 from central.db import criar_engine
 from central.motor import MotorRegras
 from central.mqtt import AdaptadorMqtt, BarramentoMqtt
 from central.repositorios import CatalogoPostgres, FilaInvalidasPostgres, RepositorioPostgres
+from nucleo.credenciais import hash_senha
 from nucleo.ingestao import BarramentoComposto, PipelineIngestao
 from nucleo.validacao import SCHEMA_V1, diretorio_contratos
 
@@ -37,11 +40,13 @@ def criar_app(
     publicar: Publicador | None = None,
     estrategias: dict | None = None,
     motor_em_segundo_plano: bool = True,
+    autenticador: Autenticador | None = None,
 ) -> FastAPI:
     """
-    `publicar`, `estrategias` e `motor_em_segundo_plano` existem para os testes:
-    capturar o que seria publicado no MQTT, trocar o cliente HTTP do webhook e
-    processar regras de forma síncrona.
+    `publicar`, `estrategias`, `motor_em_segundo_plano` e `autenticador` existem
+    para os testes: capturar o que seria publicado no MQTT, trocar o cliente
+    HTTP do webhook, processar regras de forma síncrona e validar tokens
+    assinados por uma chave local em vez do Keycloak.
     """
     cfg = cfg or configuracao()
 
@@ -61,9 +66,17 @@ def criar_app(
             | (estrategias or {}),
         )
         motor = MotorRegras(engine, executor, publicador)
+        servicos = servicos_da_central(cfg.mqtt_senhas_servicos, cfg.mqtt_topico_legado)
+        simulacao = cfg.mqtt_senhas_servicos.get("simulacao")
+        acesso = GestorAcesso(engine, cfg.mqtt_acesso_dir, servicos, hash_senha(simulacao) if simulacao else None)
+        acesso.atualizar()  # antes de conectar: o próprio usuário "central" precisa estar no broker
         app.state.engine = engine
         app.state.publicar = publicador
         app.state.motor = motor
+        app.state.acesso = acesso
+        app.state.autenticador = autenticador or Autenticador(
+            cfg.oidc_emissor, cfg.oidc_audiencia, jwks_url=cfg.oidc_jwks_url
+        )
         app.state.pipeline = PipelineIngestao(
             CatalogoPostgres(engine),
             RepositorioPostgres(engine),

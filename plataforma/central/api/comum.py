@@ -2,9 +2,8 @@
 comum.py — peças compartilhadas pelas rotas: paginação padronizada (RF-APP-07),
 contexto do inquilino, auditoria (RF-DAD-06) e tradução de erros do banco.
 
-Contexto do inquilino: até a etapa A4 (Keycloak) o inquilino vem do cabeçalho
-`X-Inquilino` e o autor de `X-Usuario`. Na A4 os dois passam a vir do token
-OIDC, sem mudar as rotas, que só dependem de `ContextoInquilino`.
+O contexto do inquilino (quem é o usuário, sobre qual inquilino age, com quais
+papéis) vem do token OIDC — ver seguranca.py.
 """
 
 import re
@@ -12,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Annotated, Generic, TypeVar
 
-from fastapi import Depends, Header, HTTPException, Query, Request
+from fastapi import Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import Connection, Engine, Select, func, insert, select
@@ -42,21 +41,10 @@ class ContextoInquilino:
     id: uuid.UUID
     slug: str
     autor: str
+    papeis: frozenset[str] = frozenset()
 
-
-def contexto_inquilino(
-    banco: Banco,
-    x_inquilino: Annotated[str, Header(description="Slug do inquilino (temporário até a A4: virá do token OIDC)")],
-    x_usuario: Annotated[str, Header(description="Autor das alterações (temporário até a A4)")] = "anonimo",
-) -> ContextoInquilino:
-    with banco.connect() as conexao:
-        inquilino_id = conexao.execute(select(db.inquilino.c.id).where(db.inquilino.c.slug == x_inquilino)).scalar()
-    if inquilino_id is None:
-        raise HTTPException(404, f"inquilino {x_inquilino!r} não encontrado")
-    return ContextoInquilino(inquilino_id, x_inquilino, x_usuario)
-
-
-Contexto = Annotated[ContextoInquilino, Depends(contexto_inquilino)]
+    def pode(self, *papeis: str) -> bool:
+        return "admin" in self.papeis or bool(self.papeis & set(papeis))
 
 
 # ──────────────────────────────────────────────

@@ -25,6 +25,10 @@ export type { FeedEvent, FirmsHotspot, Risk, SimState, Zone } from "./sim";
 const DATA_MODE = import.meta.env.VITE_DATA_MODE ?? "mqtt";
 const MQTT_URL =
   import.meta.env.VITE_MQTT_URL ?? "ws://localhost:9001";
+// Usuário de leitura do broker (TEMPORÁRIO até a etapa A5, quando o painel
+// passa a entrar pelo Keycloak e a receber o tempo real pela API da central).
+const MQTT_USUARIO = import.meta.env.VITE_MQTT_USUARIO || undefined;
+const MQTT_SENHA = import.meta.env.VITE_MQTT_SENHA || undefined;
 const TOPIC_BASE =
   import.meta.env.VITE_MQTT_TOPIC_BASE ??
   "sentinela-iot-2026-joao-carol/monitoramento-br";
@@ -385,6 +389,8 @@ function initializeMqtt() {
     .then(({ default: mqttLib }) => {
       mqttClient = mqttLib.connect(MQTT_URL, {
         clientId: createClientId(),
+        username: MQTT_USUARIO,
+        password: MQTT_SENHA,
         clean: true,
         reconnectPeriod: 3000,
         connectTimeout: 10000,

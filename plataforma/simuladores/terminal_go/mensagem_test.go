@@ -78,3 +78,11 @@ func TestLerComandoRecusaForaDoContrato(t *testing.T) {
 		}
 	}
 }
+
+// Mesmo vetor calculado por nucleo/credenciais.py (Python): as duas linguagens
+// precisam chegar à mesma credencial, senão o broker recusa o terminal.
+func TestDerivarSenhaIgualAoPython(t *testing.T) {
+	if got := DerivarSenha("segredo-de-teste", "terminal-dc-anapolis"); got != "D6OIyrhcguk2E995MGA6YxgO7vQkQIGU" {
+		t.Fatalf("DerivarSenha = %s", got)
+	}
+}

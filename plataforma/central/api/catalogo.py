@@ -6,7 +6,7 @@ configuração: nenhuma linha de código muda (RNF-08, padrão Type Object).
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
@@ -14,7 +14,6 @@ from sqlalchemy.exc import IntegrityError
 from central import db
 from central.api.comum import (
     Banco,
-    Contexto,
     Pagina,
     ParametrosPagina,
     Slug,
@@ -22,6 +21,7 @@ from central.api.comum import (
     conflito_ou_erro,
     paginar,
 )
+from central.api.seguranca import Admin, Gestao, Integracao, Leitura
 
 router = APIRouter(prefix="/api/v1", tags=["Catálogo e locais"])
 
@@ -98,7 +98,9 @@ class Perfil(PerfilEntrada):
 
 
 @router.get("/inquilinos", response_model=Pagina[Inquilino], tags=["Administração"])
-def listar_inquilinos(banco: Banco, pag: ParametrosPagina, cenario: Literal["urbano", "rural"] | None = None):
+def listar_inquilinos(
+    banco: Banco, admin: Admin, pag: ParametrosPagina, cenario: Literal["urbano", "rural"] | None = None
+):
     i = db.inquilino
     consulta = select(i.c.slug, i.c.nome, i.c.cenario)
     if cenario:
@@ -108,12 +110,12 @@ def listar_inquilinos(banco: Banco, pag: ParametrosPagina, cenario: Literal["urb
 
 
 @router.post("/inquilinos", status_code=201, response_model=Inquilino, tags=["Administração"])
-def criar_inquilino(banco: Banco, entrada: InquilinoEntrada, x_usuario: Annotated[str, Header()] = "anonimo"):
+def criar_inquilino(banco: Banco, admin: Admin, entrada: InquilinoEntrada):
     try:
         with banco.begin() as conexao:
             novo_id = conexao.execute(insert(db.inquilino).values(**entrada.model_dump()).returning(db.inquilino.c.id))
             novo_id = novo_id.scalar_one()
-            auditar(conexao, None, "inquilino", novo_id, "criar", depois=entrada.model_dump(), autor=x_usuario)
+            auditar(conexao, None, "inquilino", novo_id, "criar", depois=entrada.model_dump(), autor=admin.nome)
     except IntegrityError as exc:
         raise conflito_ou_erro(exc) from exc
     return entrada
@@ -133,7 +135,7 @@ def _site_id(conexao, ctx, slug: str):
 
 
 @router.get("/sites", response_model=Pagina[Site])
-def listar_sites(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
+def listar_sites(banco: Banco, ctx: Leitura, pag: ParametrosPagina):
     s = db.site
     consulta = select(s.c.slug, s.c.nome, s.c.lat, s.c.lon, s.c.raio_km).where(s.c.inquilino_id == ctx.id)
     with banco.connect() as conexao:
@@ -141,7 +143,7 @@ def listar_sites(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
 
 
 @router.post("/sites", status_code=201, response_model=Site)
-def criar_site(banco: Banco, ctx: Contexto, entrada: LocalEntrada):
+def criar_site(banco: Banco, ctx: Gestao, entrada: LocalEntrada):
     try:
         with banco.begin() as conexao:
             novo_id = conexao.execute(
@@ -154,7 +156,7 @@ def criar_site(banco: Banco, ctx: Contexto, entrada: LocalEntrada):
 
 
 @router.get("/sites/{site}", response_model=Site)
-def obter_site(banco: Banco, ctx: Contexto, site: str):
+def obter_site(banco: Banco, ctx: Leitura, site: str):
     s = db.site
     with banco.connect() as conexao:
         linha = (
@@ -172,7 +174,7 @@ def obter_site(banco: Banco, ctx: Contexto, site: str):
 
 
 @router.get("/sites/{site}/areas", response_model=Pagina[Area])
-def listar_areas(banco: Banco, ctx: Contexto, site: str, pag: ParametrosPagina):
+def listar_areas(banco: Banco, ctx: Leitura, site: str, pag: ParametrosPagina):
     a = db.area
     with banco.connect() as conexao:
         site_id = _site_id(conexao, ctx, site)
@@ -184,7 +186,7 @@ def listar_areas(banco: Banco, ctx: Contexto, site: str, pag: ParametrosPagina):
 
 
 @router.post("/sites/{site}/areas", status_code=201, response_model=Area)
-def criar_area(banco: Banco, ctx: Contexto, site: str, entrada: LocalEntrada):
+def criar_area(banco: Banco, ctx: Gestao, site: str, entrada: LocalEntrada):
     try:
         with banco.begin() as conexao:
             site_id = _site_id(conexao, ctx, site)
@@ -203,7 +205,7 @@ def criar_area(banco: Banco, ctx: Contexto, site: str, entrada: LocalEntrada):
 
 
 @router.get("/catalogo/dominios", response_model=Pagina[Dominio])
-def listar_dominios(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
+def listar_dominios(banco: Banco, ctx: Leitura, pag: ParametrosPagina):
     d = db.dominio
     consulta = select(d.c.slug, d.c.nome, d.c.descricao).where(d.c.inquilino_id == ctx.id)
     with banco.connect() as conexao:
@@ -211,7 +213,7 @@ def listar_dominios(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
 
 
 @router.post("/catalogo/dominios", status_code=201, response_model=Dominio)
-def criar_dominio(banco: Banco, ctx: Contexto, entrada: DominioEntrada):
+def criar_dominio(banco: Banco, ctx: Gestao, entrada: DominioEntrada):
     try:
         with banco.begin() as conexao:
             novo_id = conexao.execute(
@@ -251,7 +253,7 @@ def _perfis(conexao, ctx, dominio: str | None = None, slug: str | None = None) -
 
 
 @router.get("/catalogo/perfis", response_model=Pagina[Perfil])
-def listar_perfis(banco: Banco, ctx: Contexto, pag: ParametrosPagina, dominio: Annotated[str | None, Query()] = None):
+def listar_perfis(banco: Banco, ctx: Leitura, pag: ParametrosPagina, dominio: Annotated[str | None, Query()] = None):
     with banco.connect() as conexao:
         perfis = _perfis(conexao, ctx, dominio)
     inicio = (pag.pagina - 1) * pag.tamanho
@@ -264,7 +266,7 @@ def listar_perfis(banco: Banco, ctx: Contexto, pag: ParametrosPagina, dominio: A
 
 
 @router.post("/catalogo/perfis", status_code=201, response_model=Perfil)
-def criar_perfil(banco: Banco, ctx: Contexto, entrada: PerfilEntrada):
+def criar_perfil(banco: Banco, ctx: Integracao, entrada: PerfilEntrada):
     d = db.dominio
     try:
         with banco.begin() as conexao:

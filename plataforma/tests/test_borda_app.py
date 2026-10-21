@@ -108,7 +108,7 @@ def test_borda_baixa_e_guarda_as_regras_da_central(tmp_path, monkeypatch):
     monkeypatch.setattr(
         app.requests,
         "get",
-        lambda url, timeout: SimpleNamespace(raise_for_status=lambda: None, json=lambda: da_central),
+        lambda url, **_: SimpleNamespace(raise_for_status=lambda: None, json=lambda: da_central),
     )
     decisor = DecisorLocal(REGRAS, "borda-tocantins")
     app.atualizar_regras(decisor)
@@ -121,7 +121,7 @@ def test_borda_baixa_e_guarda_as_regras_da_central(tmp_path, monkeypatch):
 
 
 def test_sem_link_as_regras_ficam_como_estao(monkeypatch):
-    def falha(url, timeout):
+    def falha(url, **_):
         raise app.requests.ConnectionError("sem rota")
 
     monkeypatch.setattr(app.requests, "get", falha)

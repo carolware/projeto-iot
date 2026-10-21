@@ -13,6 +13,11 @@ medidas, no tópico  brigada-cerrado/{zona}/incendio/est-{zona}-01/telemetria
 do broker indicado em MQTT_BROKER: o broker local do nó de borda da região
 (fog) ou o da central, para zonas sem borda.
 
+Cada estação abre a própria conexão MQTT (TLS) com a própria credencial, como
+um aparelho real: o broker só a deixa publicar nos tópicos dela. A senha de
+cada estação simulada é derivada de SEGREDO_PROVISIONAMENTO (ver
+nucleo/credenciais.py).
+
 Pré-filtro na borda extrema (edge): só publica quando alguma medida variou
 além do limiar ou quando venceu ENVIO_MAX_S — reduz banda e energia, como
 pede o cenário rural (RNF-05).
@@ -28,7 +33,6 @@ import os
 import random
 import sys
 import time
-import uuid
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
@@ -37,6 +41,8 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # permite rodar como script
 
+from nucleo.conexao_mqtt import configurar  # noqa: E402
+from nucleo.credenciais import derivar_senha  # noqa: E402
 from nucleo.geo import distancia_km  # noqa: E402
 from nucleo.mensagem import Medida, nova_mensagem  # noqa: E402
 from nucleo.topicos import montar_topico  # noqa: E402
@@ -49,8 +55,8 @@ load_dotenv()
 # ──────────────────────────────────────────────
 
 BROKER       = os.getenv("MQTT_BROKER", "localhost")
-PORT         = int(os.getenv("MQTT_PORT", "1883"))
-CLIENT_ID    = f"sensor-sentinela-{uuid.uuid4().hex[:10]}"
+PORT         = int(os.getenv("MQTT_PORT", "8883"))
+SEGREDO      = os.getenv("SEGREDO_PROVISIONAMENTO", "")
 FIRMS_KEY    = os.getenv("FIRMS_MAP_KEY", "")
 FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")
 FIRMS_DAYS   = int(os.getenv("FIRMS_DAYS", "1"))
@@ -391,9 +397,24 @@ def inicializar_dados() -> None:
 # Entrypoint
 # ──────────────────────────────────────────────
 
-def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
-    client.subscribe(TOPICO_MOCK, qos=1)
-    log.info("Conectado a %s:%d; controle de mock em %s", BROKER, PORT, TOPICO_MOCK)
+def conectar(zona: Zona, controla_mock: bool) -> mqtt.Client:
+    """Uma conexão por estação, autenticada com a credencial dela."""
+    client = configurar(mqtt.Client(client_id=zona.estacao), zona.estacao, derivar_senha(SEGREDO, zona.estacao))
+
+    def ao_conectar(cliente: mqtt.Client, userdata, flags, rc: int) -> None:
+        if rc != 0:
+            log.error("%s: conexão recusada pelo broker (rc=%d)", zona.estacao, rc)
+            return
+        if controla_mock:  # o canal de controle da simulação só precisa de um assinante por processo
+            cliente.subscribe(TOPICO_MOCK, qos=1)
+        log.info("%s conectada a %s:%d", zona.estacao, BROKER, PORT)
+
+    client.on_connect = ao_conectar
+    if controla_mock:
+        client.message_callback_add(TOPICO_MOCK, tratar_comando_mock)
+    client.connect_async(BROKER, PORT, keepalive=60)
+    client.loop_start()
+    return client
 
 
 def main() -> None:
@@ -411,11 +432,9 @@ def main() -> None:
 
     inicializar_dados()
 
-    client = mqtt.Client(client_id=CLIENT_ID)
-    client.on_connect = on_connect
-    client.message_callback_add(TOPICO_MOCK, tratar_comando_mock)
-    client.connect(BROKER, PORT, keepalive=60)
-    client.loop_start()
+    if not SEGREDO:
+        raise SystemExit("SEGREDO_PROVISIONAMENTO não definido: as estações não têm credencial")
+    clientes = {z.slug: conectar(z, controla_mock=(i == 0)) for i, z in enumerate(ZONAS_ATENDIDAS)}
 
     print("Ctrl+C para parar\n")
 
@@ -427,7 +446,7 @@ def main() -> None:
                 leitura = leitura_atual(zona.slug)
                 agora = time.time()
                 if deve_publicar(zona.slug, leitura, agora):
-                    publicar_leitura(client, zona, leitura)
+                    publicar_leitura(clientes[zona.slug], zona, leitura)
                     _ultimo_envio[zona.slug] = (agora, leitura)
                     _contagem["publicadas"] += 1
                 else:
@@ -442,8 +461,9 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nEncerrando sensor...")
     finally:
-        client.loop_stop()
-        client.disconnect()
+        for client in clientes.values():
+            client.loop_stop()
+            client.disconnect()
 
 
 if __name__ == "__main__":

@@ -16,7 +16,6 @@ Um processo simula os atuadores das zonas em ZONAS, conectado ao broker da
 região (o do nó de borda, ou o da central para zonas sem borda).
 """
 
-import hashlib
 import json
 import logging
 import os
@@ -30,6 +29,8 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # permite rodar como script
 
+from nucleo.conexao_mqtt import configurar  # noqa: E402
+from nucleo.credenciais import derivar_senha  # noqa: E402
 from nucleo.mensagem import nova_mensagem  # noqa: E402
 from nucleo.topicos import montar_topico, parsear_topico  # noqa: E402
 from nucleo.validacao import validar_mensagem  # noqa: E402
@@ -42,7 +43,7 @@ load_dotenv()
 # ──────────────────────────────────────────────
 
 BROKER    = os.getenv("MQTT_BROKER", "localhost")
-PORT      = int(os.getenv("MQTT_PORT", "1883"))
+PORT      = int(os.getenv("MQTT_PORT", "8883"))
 
 # Mínimo de segundos entre ações repetidas para a mesma zona (evitar spam)
 ACAO_COOLDOWN_SEG = int(os.getenv("ACAO_COOLDOWN_SEG", "30"))
@@ -50,10 +51,8 @@ ESTADO_INTERVALO_S = float(os.getenv("ESTADO_INTERVALO_S", "30"))
 
 ZONAS_ATENDIDAS: dict[str, Zona] = {z.atuador: z for z in zonas_do_ambiente()}
 
-# client_id estável: com sessão persistente, o broker guarda os comandos QoS 1
-# que chegarem enquanto o atuador estiver desconectado
-_assinatura = hashlib.sha1(",".join(sorted(ZONAS_ATENDIDAS)).encode()).hexdigest()[:8]
-CLIENT_ID = os.getenv("MQTT_CLIENT_ID", f"atuadores-{_assinatura}")
+SEGREDO = os.getenv("SEGREDO_PROVISIONAMENTO", "")
+clientes: dict[str, mqtt.Client] = {}  # um por atuador (zona.slug → cliente)
 
 # ──────────────────────────────────────────────
 # Logging
@@ -141,11 +140,11 @@ def responder(client: mqtt.Client, zona: Zona, comando: dict, resultado: str) ->
     })
 
 
-def laco_estado(client: mqtt.Client, parar: threading.Event) -> None:
+def laco_estado(parar: threading.Event) -> None:
     while not parar.wait(ESTADO_INTERVALO_S):
         for zona in ZONAS_ATENDIDAS.values():
             ultimo = ultimo_comando.get(zona.slug, {})
-            publicar(client, zona, "estado", {
+            publicar(clientes[zona.slug], zona, "estado", {
                 "online": True,
                 "ultima_acao": ultimo.get("acao"),
                 "ultimo_comando_id": ultimo.get("id"),
@@ -156,14 +155,29 @@ def laco_estado(client: mqtt.Client, parar: threading.Event) -> None:
 # Callbacks MQTT
 # ──────────────────────────────────────────────
 
-def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
-    if rc == 0:
-        log.info("Conectado ao broker %s:%d", BROKER, PORT)
-        for zona in ZONAS_ATENDIDAS.values():
-            client.subscribe(montar_topico(INQUILINO, zona.slug, DOMINIO, zona.atuador, "comando"), qos=1)
-        log.info("Aguardando comandos para: %s", ", ".join(ZONAS_ATENDIDAS))
-    else:
-        log.error("Falha na conexão; rc=%d", rc)
+def conectar(zona: Zona) -> mqtt.Client:
+    """
+    Uma conexão por atuador, com a credencial dele (o broker só o deixa ler o
+    próprio /comando). client_id estável + sessão persistente: o broker guarda
+    os comandos QoS 1 que chegarem enquanto o atuador estiver desconectado.
+    """
+    client = configurar(
+        mqtt.Client(client_id=zona.atuador, clean_session=False), zona.atuador, derivar_senha(SEGREDO, zona.atuador)
+    )
+
+    def ao_conectar(cliente: mqtt.Client, userdata, flags, rc: int) -> None:
+        if rc != 0:
+            log.error("%s: conexão recusada pelo broker (rc=%d)", zona.atuador, rc)
+            return
+        cliente.subscribe(montar_topico(INQUILINO, zona.slug, DOMINIO, zona.atuador, "comando"), qos=1)
+        log.info("%s conectado a %s:%d, aguardando comandos", zona.atuador, BROKER, PORT)
+
+    client.on_connect = ao_conectar
+    client.on_message = on_message
+    client.on_disconnect = on_disconnect
+    client.connect_async(BROKER, PORT, keepalive=60)
+    client.loop_start()
+    return client
 
 
 def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
@@ -222,22 +236,20 @@ def main() -> None:
     log.info("  Broker : %s:%d", BROKER, PORT)
     log.info("═══════════════════════════════════════════════")
 
-    client = mqtt.Client(client_id=CLIENT_ID, clean_session=False)  # sessão persistente: comandos QoS 1 não se perdem
-    client.on_connect    = on_connect
-    client.on_message    = on_message
-    client.on_disconnect = on_disconnect
-
-    client.connect(BROKER, PORT, keepalive=60)
+    if not SEGREDO:
+        raise SystemExit("SEGREDO_PROVISIONAMENTO não definido: os atuadores não têm credencial")
+    for zona in ZONAS_ATENDIDAS.values():
+        clientes[zona.slug] = conectar(zona)
     parar = threading.Event()
-    threading.Thread(target=laco_estado, args=(client, parar), daemon=True).start()
-
     try:
-        client.loop_forever()
+        laco_estado(parar)
     except KeyboardInterrupt:
         log.info("Encerrando atuador…")
     finally:
         parar.set()
-        client.disconnect()
+        for client in clientes.values():
+            client.loop_stop()
+            client.disconnect()
 
 
 if __name__ == "__main__":

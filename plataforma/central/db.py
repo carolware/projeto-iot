@@ -21,7 +21,7 @@ from sqlalchemy import (
     create_engine,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 metadata = MetaData()
 _JSON = JSON().with_variant(JSONB(), "postgresql")
@@ -103,6 +103,8 @@ no_borda = Table(
     Column("slug", Text),
     Column("nome", Text),
     Column("versao", Text),
+    Column("credencial_hash", Text),
+    Column("sites", ARRAY(Text)),
     Column("fila_pendente", Integer),
     Column("ultimo_sync_em", DateTime(timezone=True)),
 )
@@ -120,6 +122,7 @@ dispositivo = Table(
     Column("tipo", Text),
     Column("fabricante", Text),
     Column("firmware", Text),
+    Column("credencial_hash", Text),
     Column("revogado_em", DateTime(timezone=True)),
     Column("ultimo_contato_em", DateTime(timezone=True)),
     Column("criado_em", DateTime(timezone=True)),

@@ -8,11 +8,18 @@
 //	publica  .../evento  {"evento": "recebido" | "reconhecido", "comando_id": ...}
 //	         .../estado  {"online": true, "alerta_pendente": ..., "ultimo_alarme_id": ...}
 //
-// Variáveis: MQTT_BROKER, MQTT_PORT, TERMINAIS (lista separada por vírgula de
-// inquilino/site/dominio/dispositivo), ESTADO_INTERVALO_S, AUTO_RECONHECER_S.
+// Cada terminal abre a própria conexão MQTT sobre TLS (verificando o broker
+// pela CA da plataforma) com a própria credencial: o broker só o deixa ler o
+// próprio /comando e publicar nos próprios tópicos.
+//
+// Variáveis: MQTT_BROKER, MQTT_PORT, MQTT_CA, SEGREDO_PROVISIONAMENTO,
+// TERMINAIS (lista separada por vírgula de inquilino/site/dominio/dispositivo),
+// ESTADO_INTERVALO_S, AUTO_RECONHECER_S.
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -33,8 +40,8 @@ type estadoTerminal struct {
 }
 
 type Simulador struct {
-	cliente         mqtt.Client
-	terminais       map[string]Terminal // chave: tópico de comando
+	clientes        map[string]mqtt.Client // chave: dispositivo
+	terminais       map[string]Terminal    // chave: tópico de comando
 	estados         map[string]*estadoTerminal
 	mu              sync.Mutex
 	autoReconhecer  time.Duration
@@ -59,7 +66,7 @@ func envSegundos(nome string, padrao float64) time.Duration {
 func (s *Simulador) publicar(t Terminal, tipo string, dados map[string]any) {
 	m := NovaMensagem(t.Dispositivo, tipo, dados, time.Now())
 	payload, _ := json.Marshal(m)
-	s.cliente.Publish(t.Topico(tipo), 1, false, payload)
+	s.clientes[t.Dispositivo].Publish(t.Topico(tipo), 1, false, payload)
 }
 
 func (s *Simulador) aoReceberComando(_ mqtt.Client, msg mqtt.Message) {
@@ -148,23 +155,33 @@ func main() {
 		log.Fatal("TERMINAIS vazio (ex.: pref-anapolis/defesa-civil/alerta_publico/terminal-dc-anapolis)")
 	}
 
-	opcoes := mqtt.NewClientOptions().
-		AddBroker(fmt.Sprintf("tcp://%s:%s", env("MQTT_BROKER", "localhost"), env("MQTT_PORT", "1883"))).
-		SetClientID(env("MQTT_CLIENT_ID", "terminais-alerta")).
-		SetCleanSession(false). // sessão persistente: alerta enviado com o terminal offline chega na reconexão
-		SetAutoReconnect(true).
-		SetConnectRetry(true).
-		SetConnectRetryInterval(3 * time.Second).
-		SetOnConnectHandler(func(c mqtt.Client) {
-			for topico := range s.terminais {
-				c.Subscribe(topico, 1, s.aoReceberComando)
-			}
-			log.Printf("conectado; %d terminal(is) aguardando alertas", len(s.terminais))
-		})
-	s.cliente = mqtt.NewClient(opcoes)
-	if token := s.cliente.Connect(); token.Wait() && token.Error() != nil {
-		log.Fatal(token.Error())
+	segredo := env("SEGREDO_PROVISIONAMENTO", "")
+	if segredo == "" {
+		log.Fatal("SEGREDO_PROVISIONAMENTO vazio: os terminais não têm credencial")
 	}
+	tlsCfg, esquema := configTLS()
+	endereco := fmt.Sprintf("%s://%s:%s", esquema, env("MQTT_BROKER", "localhost"), env("MQTT_PORT", "8883"))
+	s.clientes = map[string]mqtt.Client{}
+	for topico, t := range s.terminais {
+		topico, t := topico, t
+		opcoes := mqtt.NewClientOptions().
+			AddBroker(endereco).
+			SetTLSConfig(tlsCfg).
+			SetClientID(t.Dispositivo).
+			SetUsername(t.Dispositivo).
+			SetPassword(DerivarSenha(segredo, t.Dispositivo)).
+			SetCleanSession(false). // sessão persistente: alerta enviado com o terminal offline chega na reconexão
+			SetAutoReconnect(true).
+			SetConnectRetry(true).
+			SetConnectRetryInterval(3 * time.Second).
+			SetOnConnectHandler(func(c mqtt.Client) {
+				c.Subscribe(topico, 1, s.aoReceberComando)
+				log.Printf("%s conectado, aguardando alertas", t.Dispositivo)
+			})
+		s.clientes[t.Dispositivo] = mqtt.NewClient(opcoes)
+		s.clientes[t.Dispositivo].Connect() // com ConnectRetry, tenta em segundo plano até o broker aceitar
+	}
+	time.Sleep(2 * time.Second)
 
 	sinais := make(chan os.Signal, 1)
 	signal.Notify(sinais, syscall.SIGINT, syscall.SIGTERM)
@@ -177,8 +194,27 @@ func main() {
 			s.publicarEstados()
 		case <-sinais:
 			log.Print("encerrando")
-			s.cliente.Disconnect(500)
+			for _, c := range s.clientes {
+				c.Disconnect(500)
+			}
 			return
 		}
 	}
+}
+
+// configTLS: com MQTT_CA, TLS 1.2+ verificando o broker pela CA da plataforma.
+func configTLS() (*tls.Config, string) {
+	caminho := env("MQTT_CA", "")
+	if caminho == "" {
+		return nil, "tcp"
+	}
+	pem, err := os.ReadFile(caminho)
+	if err != nil {
+		log.Fatalf("MQTT_CA: %v", err)
+	}
+	cas := x509.NewCertPool()
+	if !cas.AppendCertsFromPEM(pem) {
+		log.Fatalf("MQTT_CA: nenhum certificado em %s", caminho)
+	}
+	return &tls.Config{RootCAs: cas, MinVersion: tls.VersionTLS12}, "ssl"
 }

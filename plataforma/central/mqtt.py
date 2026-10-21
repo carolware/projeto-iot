@@ -14,6 +14,7 @@ import uuid
 
 import paho.mqtt.client as mqtt
 
+from nucleo.conexao_mqtt import configurar
 from nucleo.ingestao import MensagemEnriquecida, PipelineIngestao, Recusa
 from nucleo.topicos import padrao_assinatura, parsear_topico
 
@@ -55,8 +56,8 @@ class AdaptadorMqtt:
         # client_id estável + sessão persistente: o broker guarda as mensagens QoS 1 que
         # chegarem enquanto a central reinicia, e elas são ingeridas na volta (RNF-10)
         persistente = client_id is not None
-        self.cliente = mqtt.Client(
-            client_id=client_id or f"central-{uuid.uuid4().hex[:10]}", clean_session=not persistente
+        self.cliente = configurar(
+            mqtt.Client(client_id=client_id or f"central-{uuid.uuid4().hex[:10]}", clean_session=not persistente)
         )
         self.pipeline: PipelineIngestao | None = None
         self.cliente.on_connect = self._ao_conectar

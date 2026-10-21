@@ -10,6 +10,10 @@ Mosquitto local (ver infra/mosquitto/borda-*.conf), que os guarda enquanto o
 link está fora. As regras locais vêm da central (escopo "borda", RF-EDG-04) e
 ficam salvas no disco do nó: reiniciar sem link usa a última versão recebida.
 
+Segurança: o nó fala com a central com a própria credencial (HTTP Basic) e
+mantém em dia as senhas/ACL do broker local (só hashes, vindos da central). O
+broker local exige TLS e credencial por dispositivo, mesmo sem link.
+
 Execução:  python -m borda.app
 """
 
@@ -29,6 +33,8 @@ from prometheus_client import Counter, Gauge, start_http_server
 from borda.decisao_local import DecisorLocal
 from borda.fila import PRIORIDADE_ALARME, PRIORIDADE_ESTADO, PRIORIDADE_TELEMETRIA, FilaLocal
 from borda.sincronizador import LinkIndisponivel, Sincronizador
+from nucleo.conexao_mqtt import configurar
+from nucleo.credenciais import gravar_se_mudou
 from nucleo.regras import Regra
 from nucleo.topicos import padrao_assinatura, parsear_topico
 from nucleo.validacao import validar_mensagem
@@ -43,8 +49,10 @@ BORDA_ID = os.getenv("BORDA_ID", "borda-tocantins")
 INQUILINO = os.getenv("BORDA_INQUILINO", "brigada-cerrado")
 SITES = {s.strip() for s in os.getenv("BORDA_SITES", "mateiros,lagoa-da-confusao,sandolandia").split(",") if s.strip()}
 BROKER = os.getenv("MQTT_BROKER", "localhost")
-PORT = int(os.getenv("MQTT_PORT", "1883"))
+PORT = int(os.getenv("MQTT_PORT", "8883"))
 CENTRAL_URL = os.getenv("CENTRAL_URL", "http://localhost:8000").rstrip("/")
+CREDENCIAL = os.getenv("BORDA_CREDENCIAL", "")
+ACESSO_DIR = Path(os.getenv("BORDA_ACESSO_DIR", "/acesso"))
 CHAVE = os.getenv("BORDA_CHAVE", "")
 ARQUIVO_FILA = os.getenv("BORDA_FILA", f"/dados/{BORDA_ID}.db")
 REGRAS = os.getenv("BORDA_REGRAS", str(Path(__file__).with_name("regras-padrao.json")))
@@ -91,7 +99,9 @@ class NoBorda:
     def __init__(self, fila: FilaLocal, decisor: DecisorLocal):
         self.fila = fila
         self.decisor = decisor
-        self.cliente = mqtt.Client(client_id=f"{BORDA_ID}-{uuid.uuid4().hex[:6]}", clean_session=True)
+        self.cliente = configurar(
+            mqtt.Client(client_id=f"{BORDA_ID}-{uuid.uuid4().hex[:6]}", clean_session=True), BORDA_ID, CREDENCIAL
+        )
         self.cliente.on_connect = self._ao_conectar
         self.cliente.on_message = self._ao_receber
 
@@ -155,7 +165,11 @@ class NoBorda:
 def enviar_lote(mensagens: list[dict]) -> dict:
     try:
         resposta = requests.post(
-            f"{CENTRAL_URL}/api/v1/ingestao/lote", params={"via": BORDA_ID}, json={"mensagens": mensagens}, timeout=15
+            f"{CENTRAL_URL}/api/v1/ingestao/lote",
+            params={"via": BORDA_ID},
+            json={"mensagens": mensagens},
+            auth=(BORDA_ID, CREDENCIAL),
+            timeout=15,
         )
         resposta.raise_for_status()
         return resposta.json()
@@ -168,6 +182,7 @@ def informar_estado(fila: FilaLocal) -> None:
         requests.put(
             f"{CENTRAL_URL}/api/v1/bordas/{BORDA_ID}/estado",
             json={"fila_pendente": fila.contagem()["pendente"], "versao": VERSAO},
+            auth=(BORDA_ID, CREDENCIAL),
             timeout=5,
         ).raise_for_status()
     except requests.RequestException as exc:
@@ -183,7 +198,9 @@ def carregar_regras_locais() -> list[Regra]:
 def atualizar_regras(decisor: DecisorLocal) -> None:
     """Baixa as regras de escopo borda (RF-EDG-04) e troca as do decisor se mudaram."""
     try:
-        resposta = requests.get(f"{CENTRAL_URL}/api/v1/bordas/{BORDA_ID}/regras", timeout=5)
+        resposta = requests.get(
+            f"{CENTRAL_URL}/api/v1/bordas/{BORDA_ID}/regras", auth=(BORDA_ID, CREDENCIAL), timeout=5
+        )
         resposta.raise_for_status()
         brutas = resposta.json()
     except (requests.RequestException, ValueError) as exc:
@@ -196,6 +213,20 @@ def atualizar_regras(decisor: DecisorLocal) -> None:
     temporario.write_text(json.dumps(brutas, ensure_ascii=False, indent=2), encoding="utf-8")
     temporario.replace(REGRAS_SINCRONIZADAS)  # troca atômica: queda de energia não deixa arquivo pela metade
     log.info("Regras locais atualizadas pela central: %s", ", ".join(r.nome for r in novas) or "nenhuma")
+
+
+def atualizar_acesso() -> None:
+    """Senhas/ACL do broker local (RF-SEG-04): dispositivo novo ou revogado na central vale aqui também."""
+    try:
+        resposta = requests.get(
+            f"{CENTRAL_URL}/api/v1/bordas/{BORDA_ID}/acesso", auth=(BORDA_ID, CREDENCIAL), timeout=5
+        )
+        resposta.raise_for_status()
+        acesso = resposta.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise LinkIndisponivel(str(exc)) from exc
+    if gravar_se_mudou(ACESSO_DIR, acesso["senhas"], acesso["acl"]):
+        log.info("Credenciais/ACL do broker local atualizadas (%d usuários)", acesso["senhas"].count("\n"))
 
 
 def laco_sincronizacao(
@@ -213,6 +244,7 @@ def laco_sincronizacao(
                 fila.limpar_enviadas(RETENCAO_ENVIADAS_S)
             if decisor and (online is False or time.time() - ultimas_regras >= REGRAS_INTERVALO_S):
                 atualizar_regras(decisor)  # também logo após reconectar
+                atualizar_acesso()
                 ultimas_regras = time.time()
             if online is False:
                 log.info("Link com a central restabelecido")
@@ -257,6 +289,10 @@ def main() -> None:
     log.info("═══════════════════════════════════════════════")
 
     start_http_server(METRICAS_PORTA)
+    try:
+        atualizar_acesso()  # o próprio nó precisa estar no password_file do broker local
+    except LinkIndisponivel as exc:
+        log.warning("Sem link na partida (%s): usando as credenciais locais já salvas", exc)
     no = NoBorda(fila, decisor)
     no.iniciar()
     parar = threading.Event()

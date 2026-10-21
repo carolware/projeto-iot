@@ -20,7 +20,6 @@ from central import db
 from central.acoes import FalhaAcao, enviar_comando
 from central.api.comum import (
     Banco,
-    Contexto,
     Pagina,
     ParametrosPagina,
     Slug,
@@ -28,6 +27,8 @@ from central.api.comum import (
     conflito_ou_erro,
     paginar,
 )
+from central.api.seguranca import Integracao, Leitura, Operacao
+from nucleo.credenciais import gerar_credencial, hash_senha
 
 router = APIRouter(prefix="/api/v1/dispositivos", tags=["Dispositivos"])
 
@@ -38,7 +39,7 @@ TOLERANCIA_OFFLINE = 3
 Tipo = Literal["estacao", "terminal", "atuador", "conector"]
 
 
-class DispositivoEntrada(BaseModel):
+class DispositivoBase(BaseModel):
     slug: Slug
     nome: str = Field(min_length=1)
     tipo: Tipo
@@ -50,6 +51,14 @@ class DispositivoEntrada(BaseModel):
     firmware: str | None = None
 
 
+class DispositivoEntrada(DispositivoBase):
+    credencial: str | None = Field(
+        default=None,
+        min_length=16,
+        description="Credencial já gravada no aparelho (provisionamento). Vazio = a plataforma gera uma.",
+    )
+
+
 class DispositivoAtualizacao(BaseModel):
     nome: str | None = Field(default=None, min_length=1)
     site: Slug | None = None
@@ -58,11 +67,24 @@ class DispositivoAtualizacao(BaseModel):
     firmware: str | None = None
 
 
-class Dispositivo(DispositivoEntrada):
+class Dispositivo(DispositivoBase):
     online: bool
     revogado: bool
     ultimo_contato_em: datetime | None
     intervalo_esperado_s: int
+
+
+class DispositivoCriado(Dispositivo):
+    credencial: str = Field(description="Mostrada só agora: a plataforma guarda apenas o hash")
+
+
+class ReprovisionarEntrada(BaseModel):
+    credencial: str | None = Field(default=None, min_length=16, description="Credencial já gravada no aparelho")
+
+
+class NovaCredencial(BaseModel):
+    dispositivo: str
+    credencial: str
 
 
 class LeituraAtual(BaseModel):
@@ -166,7 +188,7 @@ def _id_dispositivo(conexao, ctx, slug: str):
 @router.get("", response_model=Pagina[Dispositivo])
 def listar(
     banco: Banco,
-    ctx: Contexto,
+    ctx: Leitura,
     pag: ParametrosPagina,
     site: str | None = None,
     dominio: str | None = None,
@@ -188,9 +210,10 @@ def listar(
         return paginar(conexao, consulta, pag, ordenaveis, "slug")
 
 
-@router.post("", status_code=201, response_model=Dispositivo)
-def criar(banco: Banco, ctx: Contexto, entrada: DispositivoEntrada):
+@router.post("", status_code=201, response_model=DispositivoCriado)
+def criar(request: Request, banco: Banco, ctx: Integracao, entrada: DispositivoEntrada):
     p, dom = db.perfil_dispositivo, db.dominio
+    credencial = entrada.credencial or gerar_credencial()
     try:
         with banco.begin() as conexao:
             perfil_id = conexao.execute(
@@ -208,24 +231,61 @@ def criar(banco: Banco, ctx: Contexto, entrada: DispositivoEntrada):
                     perfil_id=perfil_id,
                     site_id=site_id,
                     area_id=area_id,
+                    credencial_hash=hash_senha(credencial),
                     **entrada.model_dump(include={"slug", "nome", "tipo", "fabricante", "firmware"}),
                 )
                 .returning(db.dispositivo.c.id)
             ).scalar_one()
-            auditar(conexao, ctx, "dispositivo", novo_id, "criar", depois=entrada.model_dump())
-            return _obter(conexao, ctx, entrada.slug)
+            auditar(conexao, ctx, "dispositivo", novo_id, "criar", depois=entrada.model_dump(exclude={"credencial"}))
+            criado = _obter(conexao, ctx, entrada.slug)
     except IntegrityError as exc:
         raise conflito_ou_erro(exc) from exc
+    request.app.state.acesso.atualizar()
+    return criado | {"credencial": credencial}
+
+
+@router.post(
+    "/{slug}/credencial", response_model=NovaCredencial, summary="Emitir nova credencial (a anterior deixa de valer)"
+)
+def renovar_credencial(
+    request: Request, banco: Banco, ctx: Integracao, slug: str, entrada: ReprovisionarEntrada | None = None
+):
+    """Sem corpo: a plataforma gera uma credencial nova. Com `credencial`: reprovisiona com a do aparelho."""
+    credencial = (entrada.credencial if entrada else None) or gerar_credencial()
+    d = db.dispositivo
+    with banco.begin() as conexao:
+        dispositivo_id = _id_dispositivo(conexao, ctx, slug)
+        conexao.execute(
+            update(d).where(d.c.id == dispositivo_id).values(credencial_hash=hash_senha(credencial), revogado_em=None)
+        )
+        auditar(conexao, ctx, "dispositivo", dispositivo_id, "renovar_credencial")
+    request.app.state.acesso.atualizar()
+    return {"dispositivo": slug, "credencial": credencial}
+
+
+@router.post("/{slug}/revogar", response_model=Dispositivo, summary="Revogar a credencial do dispositivo")
+def revogar(request: Request, banco: Banco, ctx: Integracao, slug: str):
+    """A conexão seguinte é recusada na central e, após a próxima sincronização, nos nós de borda (RF-DIS-02)."""
+    d = db.dispositivo
+    with banco.begin() as conexao:
+        dispositivo_id = _id_dispositivo(conexao, ctx, slug)
+        conexao.execute(
+            update(d).where(d.c.id == dispositivo_id, d.c.revogado_em.is_(None)).values(revogado_em=func.now())
+        )
+        auditar(conexao, ctx, "dispositivo", dispositivo_id, "revogar")
+        revogado = _obter(conexao, ctx, slug)
+    request.app.state.acesso.atualizar()
+    return revogado
 
 
 @router.get("/{slug}", response_model=Dispositivo)
-def obter(banco: Banco, ctx: Contexto, slug: str):
+def obter(banco: Banco, ctx: Leitura, slug: str):
     with banco.connect() as conexao:
         return _obter(conexao, ctx, slug)
 
 
 @router.patch("/{slug}", response_model=Dispositivo)
-def atualizar(banco: Banco, ctx: Contexto, slug: str, entrada: DispositivoAtualizacao):
+def atualizar(banco: Banco, ctx: Integracao, slug: str, entrada: DispositivoAtualizacao):
     mudancas = entrada.model_dump(exclude_unset=True)
     with banco.begin() as conexao:
         antes = _obter(conexao, ctx, slug)
@@ -253,7 +313,7 @@ def atualizar(banco: Banco, ctx: Contexto, slug: str, entrada: DispositivoAtuali
 
 
 @router.get("/{slug}/estado", response_model=EstadoDispositivo, summary="Último estado (sem consultar o histórico)")
-def estado(banco: Banco, ctx: Contexto, slug: str):
+def estado(banco: Banco, ctx: Leitura, slug: str):
     ue, g = db.ultimo_estado, db.gemeo
     with banco.connect() as conexao:
         dispositivo = _obter(conexao, ctx, slug)
@@ -279,7 +339,7 @@ def estado(banco: Banco, ctx: Contexto, slug: str):
 @router.get("/{slug}/telemetria", response_model=Pagina[PontoTelemetria], summary="Histórico por grandeza e intervalo")
 def telemetria(
     banco: Banco,
-    ctx: Contexto,
+    ctx: Leitura,
     slug: str,
     pag: ParametrosPagina,
     grandeza: str | None = None,
@@ -347,7 +407,7 @@ class Gemeo(BaseModel):
 
 
 @router.post("/{slug}/comandos", status_code=202, response_model=Comando)
-def enviar(request: Request, banco: Banco, ctx: Contexto, slug: str, entrada: ComandoEntrada):
+def enviar(request: Request, banco: Banco, ctx: Operacao, slug: str, entrada: ComandoEntrada):
     with banco.connect() as conexao:
         _id_dispositivo(conexao, ctx, slug)  # 404 antes de qualquer efeito
     try:
@@ -369,7 +429,7 @@ def enviar(request: Request, banco: Banco, ctx: Contexto, slug: str, entrada: Co
 
 
 @router.get("/{slug}/comandos", response_model=Pagina[Comando])
-def listar_comandos(banco: Banco, ctx: Contexto, slug: str, pag: ParametrosPagina):
+def listar_comandos(banco: Banco, ctx: Leitura, slug: str, pag: ParametrosPagina):
     c = db.comando
     with banco.connect() as conexao:
         dispositivo_id = _id_dispositivo(conexao, ctx, slug)
@@ -411,13 +471,13 @@ def _gemeo(conexao, ctx, slug: str) -> dict:
 
 
 @router.get("/{slug}/gemeo", response_model=Gemeo)
-def obter_gemeo(banco: Banco, ctx: Contexto, slug: str):
+def obter_gemeo(banco: Banco, ctx: Leitura, slug: str):
     with banco.connect() as conexao:
         return _gemeo(conexao, ctx, slug)
 
 
 @router.put("/{slug}/gemeo/desejado", response_model=Gemeo, summary="Definir o estado desejado (comando assíncrono)")
-def definir_desejado(request: Request, banco: Banco, ctx: Contexto, slug: str, desejado: dict):
+def definir_desejado(request: Request, banco: Banco, ctx: Operacao, slug: str, desejado: dict):
     """
     Grava o desejado e envia o comando `aplicar_desejado` com QoS 1 e sessão
     persistente: se o aparelho estiver offline, o broker entrega na reconexão;

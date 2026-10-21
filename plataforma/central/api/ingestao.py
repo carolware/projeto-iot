@@ -11,10 +11,15 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from central.api.seguranca import AutorizacaoIngestao
 from nucleo.ingestao import PipelineIngestao, Resultado
 from nucleo.validacao import diretorio_contratos
 
 router = APIRouter(prefix="/api/v1/ingestao", tags=["Ingestão"])
+
+# Autenticação: dispositivo ou nó de borda (HTTP Basic com a própria credencial)
+# ou usuário integrador/gestor (Bearer). Cada mensagem só é aceita se a
+# credencial puder falar pelo dispositivo dela (ver seguranca.autorizacao_ingestao).
 
 LIMITE_LOTE = 10_000
 _EXEMPLO = json.loads((diretorio_contratos() / "exemplos" / "telemetria-estacao.json").read_text(encoding="utf-8"))
@@ -66,9 +71,10 @@ def _serializar(r: Resultado) -> dict:
 )
 def ingerir(
     request: Request,
+    autorizado: AutorizacaoIngestao,
     mensagem: Annotated[Any, Body(description="Mensagem canônica v1.0", examples=[_EXEMPLO])],
 ):
-    [resultado] = _pipeline(request).processar([mensagem], origem="http:/api/v1/ingestao")
+    [resultado] = _pipeline(request).processar([mensagem], origem="http:/api/v1/ingestao", autorizado=autorizado)
     if resultado.status == "recusada":
         return JSONResponse(status_code=400, content=_serializar(resultado))
     return _serializar(resultado)
@@ -81,9 +87,9 @@ def ingerir(
     description=f"Até {LIMITE_LOTE} mensagens. As válidas são gravadas mesmo que outras sejam recusadas; "
     "o resultado vem por mensagem, na ordem enviada. Reenviar o mesmo lote é seguro (idempotente).",
 )
-def ingerir_lote(request: Request, lote: Lote, via: str | None = None):
+def ingerir_lote(request: Request, autorizado: AutorizacaoIngestao, lote: Lote, via: str | None = None):
     origem = f"lote:{via}" if via else "http:/api/v1/ingestao/lote"
-    resultados = _pipeline(request).processar(lote.mensagens, origem=origem)
+    resultados = _pipeline(request).processar(lote.mensagens, origem=origem, autorizado=autorizado)
     contagem = {s: sum(r.status == s for r in resultados) for s in ("aceita", "duplicada", "recusada")}
     return {
         "total": len(resultados),

@@ -182,8 +182,19 @@ class PipelineIngestao:
         self.barramento = barramento or BarramentoNulo()
         self.relogio = relogio
 
-    def processar(self, brutos: list[object], origem: str, topico: Topico | None = None) -> list[Resultado]:
-        """Processa uma mensagem (lista de 1) ou um lote; devolve um resultado por mensagem, na ordem recebida."""
+    def processar(
+        self,
+        brutos: list[object],
+        origem: str,
+        topico: Topico | None = None,
+        autorizado: Callable[[DispositivoCadastrado], bool] | None = None,
+    ) -> list[Resultado]:
+        """
+        Processa uma mensagem (lista de 1) ou um lote; devolve um resultado por
+        mensagem, na ordem recebida. `autorizado` diz se a credencial de quem
+        enviou pode falar por aquele dispositivo (HTTP); no MQTT, o broker já
+        garante isso pela ACL de tópicos.
+        """
         recebido_em = self.relogio()
         resultados: dict[int, Resultado] = {}
         recusas: list[Recusa] = []
@@ -203,7 +214,7 @@ class PipelineIngestao:
         enriquecidas: list[tuple[int, MensagemEnriquecida]] = []
         for indice, mensagem in candidatas:
             try:
-                dispositivo = _autenticar(mensagem, cadastro.get(mensagem.dispositivo), topico)
+                dispositivo = _autenticar(mensagem, cadastro.get(mensagem.dispositivo), topico, autorizado)
                 medidas = _enriquecer_medidas(mensagem, dispositivo)
             except _Recusada as recusada:
                 resultados[indice] = Resultado(indice, "recusada", mensagem.id_mensagem, recusada.erros)
@@ -252,10 +263,15 @@ def _id_de(bruto: object) -> str | None:
 
 
 def _autenticar(
-    mensagem: Mensagem, dispositivo: DispositivoCadastrado | None, topico: Topico | None
+    mensagem: Mensagem,
+    dispositivo: DispositivoCadastrado | None,
+    topico: Topico | None,
+    autorizado: Callable[[DispositivoCadastrado], bool] | None,
 ) -> DispositivoCadastrado:
     if dispositivo is None:
         raise _Recusada(ErroValidacao("dispositivo", f"{mensagem.dispositivo!r} não está cadastrado"))
+    if autorizado is not None and not autorizado(dispositivo):
+        raise _Recusada(ErroValidacao("dispositivo", "a credencial usada não pode enviar dados deste dispositivo"))
     if dispositivo.revogado:
         raise _Recusada(ErroValidacao("dispositivo", "credencial do dispositivo revogada"))
     if mensagem.tipo == "comando":

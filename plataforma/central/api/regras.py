@@ -14,7 +14,9 @@ from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from central import db
-from central.api.comum import Banco, Contexto, Pagina, ParametrosPagina, Slug, auditar, conflito_ou_erro
+from central.acoes import mascarar
+from central.api.comum import Banco, Pagina, ParametrosPagina, Slug, auditar, conflito_ou_erro
+from central.api.seguranca import Borda, Gestao, Leitura
 from central.motor import carregar_regras
 from nucleo.regras import validar_regra
 
@@ -112,9 +114,18 @@ def _gravar_acoes(conexao, regra_id: uuid.UUID, acoes: list[dict]) -> None:
         )
 
 
+def _mascarar_destinos(regras: list[dict], ctx) -> list[dict]:
+    """Telefones e e-mails de notificação só aparecem completos para o gestor (LGPD, RF-DAD-05)."""
+    if ctx.pode("gestor"):
+        return regras
+    for regra in regras:
+        regra["acoes"] = [a | {"destino": mascarar(str(a["destino"]))} if "destino" in a else a for a in regra["acoes"]]
+    return regras
+
+
 @router.get("/regras", response_model=Pagina[RegraSaida])
-def listar(banco: Banco, ctx: Contexto, pag: ParametrosPagina, dominio: str | None = None):
-    regras = _listar(banco, ctx, dominio)
+def listar(banco: Banco, ctx: Leitura, pag: ParametrosPagina, dominio: str | None = None):
+    regras = _mascarar_destinos(_listar(banco, ctx, dominio), ctx)
     inicio = (pag.pagina - 1) * pag.tamanho
     return {
         "itens": regras[inicio : inicio + pag.tamanho],
@@ -125,15 +136,15 @@ def listar(banco: Banco, ctx: Contexto, pag: ParametrosPagina, dominio: str | No
 
 
 @router.get("/regras/{nome}", response_model=RegraSaida)
-def obter(banco: Banco, ctx: Contexto, nome: str):
+def obter(banco: Banco, ctx: Leitura, nome: str):
     regras = _listar(banco, ctx, nome=nome)
     if not regras:
         raise HTTPException(404, f"regra {nome!r} não encontrada")
-    return regras[0]
+    return _mascarar_destinos(regras, ctx)[0]
 
 
 @router.post("/regras", status_code=201, response_model=RegraSaida)
-def criar(request: Request, banco: Banco, ctx: Contexto, entrada: RegraEntrada):
+def criar(request: Request, banco: Banco, ctx: Gestao, entrada: RegraEntrada):
     erros = validar_regra(entrada.model_dump())
     if erros:
         raise HTTPException(422, erros)
@@ -163,7 +174,7 @@ def criar(request: Request, banco: Banco, ctx: Contexto, entrada: RegraEntrada):
 
 
 @router.patch("/regras/{nome}", response_model=RegraSaida)
-def atualizar(request: Request, banco: Banco, ctx: Contexto, nome: str, entrada: RegraAtualizacao):
+def atualizar(request: Request, banco: Banco, ctx: Gestao, nome: str, entrada: RegraAtualizacao):
     antes = obter(banco, ctx, nome)
     mudancas = entrada.model_dump(exclude_unset=True)
     candidata = {**antes, **mudancas}
@@ -188,15 +199,8 @@ def atualizar(request: Request, banco: Banco, ctx: Contexto, nome: str, entrada:
     tags=["Operação"],
     summary="Regras de escopo borda para um nó de borda (sincronizadas a cada conexão)",
 )
-def regras_da_borda(banco: Banco, slug: str, dominio: Annotated[str | None, Query()] = None):
-    # autenticação do nó por credencial própria entra na etapa A4 (RF-SEG-05)
-    b, i = db.no_borda, db.inquilino
-    with banco.connect() as conexao:
-        inquilino = conexao.execute(
-            select(i.c.slug).join(b, b.c.inquilino_id == i.c.id).where(b.c.slug == slug)
-        ).scalar()
-    if inquilino is None:
-        raise HTTPException(404, f"nó de borda {slug!r} não cadastrado")
+def regras_da_borda(banco: Banco, borda: Borda, slug: str, dominio: Annotated[str | None, Query()] = None):
+    inquilino = borda.inquilino
     return [
         {k: v for k, v in r.para_dict().items() if k != "id"}
         | {"acoes": [a for a in r.acoes if a["tipo"] == "comando"]}
