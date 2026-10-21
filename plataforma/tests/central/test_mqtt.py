@@ -8,6 +8,7 @@ import os
 import socket
 import threading
 import uuid
+from dataclasses import replace
 
 import paho.mqtt.client as mqtt
 import pytest
@@ -16,6 +17,11 @@ from central.mqtt import AdaptadorMqtt, BarramentoMqtt
 from nucleo import Medida, nova_mensagem
 from nucleo.ingestao import PipelineIngestao
 from tests.test_ingestao import ESTACAO, CatalogoFake, FilaFake, RepositorioFake
+
+# inquilino exclusivo: o broker pode ter tráfego real (compose rodando) que não interessa ao teste
+INQUILINO = f"teste-{uuid.uuid4().hex[:8]}"
+ESTACAO_TESTE = replace(ESTACAO, inquilino=INQUILINO)
+TOPICO_OK = f"{INQUILINO}/mateiros/incendio/est-mateiros-01/telemetria"
 
 BROKER = os.getenv("MQTT_TESTE_BROKER", "localhost")
 PORTA = 1883
@@ -56,8 +62,8 @@ class Ouvinte:
 @pytest.fixture
 def central():
     repo, fila = RepositorioFake(), FilaFake()
-    adaptador = AdaptadorMqtt(BROKER, PORTA)
-    pipeline = PipelineIngestao(CatalogoFake(ESTACAO), repo, fila, BarramentoMqtt(adaptador.cliente))
+    adaptador = AdaptadorMqtt(BROKER, PORTA, inquilinos=[INQUILINO])
+    pipeline = PipelineIngestao(CatalogoFake(ESTACAO_TESTE), repo, fila, BarramentoMqtt(adaptador.cliente))
     conectado = threading.Event()
     ao_conectar = adaptador.cliente.on_connect
 
@@ -83,13 +89,13 @@ def _publicar(topico: str, carga) -> None:
 
 def test_telemetria_no_topico_canonico_e_republicada_enriquecida(central):
     repo, _ = central
-    ouvinte = Ouvinte("plataforma/telemetria/brigada-cerrado/#")
+    ouvinte = Ouvinte(f"plataforma/telemetria/{INQUILINO}/#")
     msg = nova_mensagem("est-mateiros-01", "telemetria", medidas=[Medida("umidade", 18, "%")])
-    _publicar("brigada-cerrado/mateiros/incendio/est-mateiros-01/telemetria", msg)
+    _publicar(TOPICO_OK, msg)
     assert ouvinte.evento.wait(5)
     ouvinte.parar()
     topico, carga = ouvinte.recebidas[0]
-    assert topico == "plataforma/telemetria/brigada-cerrado/mateiros/incendio/est-mateiros-01"
+    assert topico == f"plataforma/telemetria/{INQUILINO}/mateiros/incendio/est-mateiros-01"
     assert carga["id_mensagem"] == msg["id_mensagem"] and carga["contexto"]["dominio"] == "incendio"
     assert msg["id_mensagem"] in repo.gravadas
 
@@ -97,13 +103,13 @@ def test_telemetria_no_topico_canonico_e_republicada_enriquecida(central):
 @pytest.mark.parametrize(
     ("topico", "carga"),
     [
-        ("pref-anapolis/mateiros/incendio/est-mateiros-01/telemetria", "valida-de-outro-inquilino"),
-        ("brigada-cerrado/mateiros/incendio/est-mateiros-01/telemetria", "{nao e json"),
+        (f"{INQUILINO}/formosa/incendio/est-mateiros-01/telemetria", "valida-de-outro-site"),
+        (TOPICO_OK, "{nao e json"),
     ],
 )
 def test_recusada_vai_para_a_dlq_do_barramento(central, topico, carga):
     _, fila = central
-    if carga == "valida-de-outro-inquilino":
+    if carga == "valida-de-outro-site":
         carga = nova_mensagem("est-mateiros-01", "telemetria", medidas=[Medida("umidade", 18, "%")])
     ouvinte = Ouvinte("plataforma/dlq")
     _publicar(topico, carga)
@@ -115,9 +121,9 @@ def test_recusada_vai_para_a_dlq_do_barramento(central, topico, carga):
 
 def test_topico_fora_da_convencao_e_ignorado(central):
     repo, fila = central
-    _publicar("brigada-cerrado/mateiros/incendio/est-mateiros-01/telemetria/extra", {"x": 1})
+    _publicar(f"{TOPICO_OK}/extra", {"x": 1})
     _publicar(
-        "brigada-cerrado/mateiros/incendio/est-mateiros-01/telemetria",
+        TOPICO_OK,
         nova_mensagem("est-mateiros-01", "telemetria", medidas=[Medida("umidade", 18, "%")]),
     )
     # a segunda mensagem chega; a primeira nunca entra no pipeline

@@ -230,7 +230,7 @@ MQTT (*Message Queuing Telemetry Transport*) é um protocolo de mensageria publi
 
 | Parâmetro     | Valor             | Justificativa                           |
 |---------------|-------------------|-----------------------------------------|
-| Broker        | broker.hivemq.com | Broker público gratuito para prototipagem|
+| Broker        | Eclipse Mosquitto (central + um por borda) | Brokers próprios, ver `plataforma/infra/mosquitto` |
 | Porta         | 1883              | TCP sem TLS (ambiente de desenvolvimento)|
 | QoS (sensor)  | 0 (at most once)  | Dados de telemetria — perda ocasional aceitável |
 | QoS (alerta)  | 1 (at least once) | Broker confirma o recebimento; pode haver duplicação |
@@ -276,40 +276,63 @@ cp .env.example .env
 # Editar .env e preencher FIRMS_MAP_KEY com sua chave da NASA
 ```
 
-### 5.3 Execução — Ordem Recomendada
+### 5.3 Execução (Docker Compose)
 
-Suba o broker MQTT local (`docker compose up -d mosquitto-central`) e abra
-três terminais separados na raiz do projeto:
-
-```bash
-# Terminal 1 — Atuador (deve estar pronto antes do gateway publicar)
-python plataforma/simuladores/atuador/atuador.py
-
-# Terminal 2 — Gateway (motor de regras + FIRMS)
-python plataforma/borda/gateway.py
-
-# Terminal 3 — Coletor de dados Open-Meteo/FIRMS
-python plataforma/simuladores/estacao/sensor.py
-```
-
-### 5.3.1 Alternativa: Docker Compose
-
-Com `.env` preenchido (passo 5.2), sobe o broker próprio (`mosquitto-central`),
-o banco (`postgres`, TimescaleDB), a instância central (`central`) e os serviços
-`atuador`, `gateway`, `sensor` e `front` de uma vez, sem precisar de venv/Node
-instalados na máquina:
+Com `.env` preenchido (passo 5.2; `cp .env.example .env` já traz chaves de
+desenvolvimento para as bordas), suba tudo de uma vez:
 
 ```bash
 docker compose up -d --build
-docker compose logs -f          # acompanhar os serviços
-docker compose down             # parar tudo
+docker compose logs -f borda-tocantins atuadores-tocantins   # acompanhar uma região
+docker compose down                                          # parar tudo
 ```
 
-O front fica em `http://localhost:3000` (build de produção, não o dev server
-do Vite) e fala com o broker em `ws://localhost:9001`. As variáveis `VITE_*`
-são compiladas no build da imagem (o compose passa `VITE_MQTT_URL` como build
-arg) — se mudar alguma, recrie a imagem do front
-(`docker compose up -d --build front`).
+A topologia reproduz as três camadas (edge → fog → cloud):
+
+| Camada | Serviços | O que fazem |
+|---|---|---|
+| **Edge** (campo) | `estacoes-*`, `atuadores-*` | Estações simuladas (Open-Meteo + FIRMS + ruído) publicam a mensagem canônica com pré-filtro de envio; atuadores executam comandos e respondem |
+| **Fog** (borda) | `mosquitto-borda-{tocantins,goias}`, `borda-{tocantins,goias}` | Broker local, validação, **fila SQLite cifrada**, **regras locais** (aciona a brigada sem a central) e sincronização em lotes; a bridge do Mosquitto desce comandos da central |
+| **Cloud** (central) | `mosquitto-central`, `central`, `postgres`, `conector-firms`, `terminais` | Ingestão, cadastro, TimescaleDB, API; conector NASA FIRMS (nível 3); terminais de alerta das prefeituras (Go) |
+
+Novo Progresso (PA) e Mirador (MA) não têm nó de borda: as estações delas
+(`estacoes-diretas`) falam direto com a central, como um local com boa conexão.
+
+O front fica em `http://localhost:3000` e fala com o broker em
+`ws://localhost:9001`. Enquanto a etapa A5 não migra o painel, o serviço
+`ponte-front` traduz o barramento novo para os tópicos antigos que ele usa.
+As variáveis `VITE_*` são compiladas no build da imagem — se mudar alguma,
+recrie a imagem do front (`docker compose up -d --build front`).
+
+Para rodar um componente fora do Docker (ex.: depurar a borda), instale o
+pacote (`pip install -r plataforma/requirements.txt -e plataforma`) e rode a
+partir de `plataforma/`, ex.: `python -m borda.app`.
+
+### 5.3.1 Roteiro de demonstração
+
+```bash
+# 1. Domínio urbano criado só pela API (RNF-08): alerta_publico + terminais das prefeituras
+python plataforma/simuladores/demo/cadastrar_alerta_publico.py
+
+# 2. Incêndio em Mateiros: a borda do Tocantins decide localmente e aciona a brigada
+python plataforma/simuladores/mock_incendio.py on mateiros --lat -10.55 --lon -46.30
+docker compose logs -f borda-tocantins atuadores-tocantins
+
+# 3. Queda do link da fazenda: a borda continua agindo e guarda tudo na fila cifrada
+sh plataforma/simuladores/demo/link.sh off tocantins
+python plataforma/simuladores/mock_incendio.py on lagoa-da-confusao
+curl -s localhost:9101/metrics | grep borda_fila_pendente      # fila crescendo
+
+# 4. Link volta: a fila é sincronizada em lotes, sem perda nem duplicata,
+#    e os alarmes chegam à central com o horário em que ocorreram
+sh plataforma/simuladores/demo/link.sh on tocantins
+curl -s localhost:8000/api/v1/bordas -H 'X-Inquilino: brigada-cerrado'
+
+python plataforma/simuladores/mock_incendio.py off
+```
+
+Métricas Prometheus dos nós de borda: `localhost:9101/metrics` (Tocantins) e
+`localhost:9102/metrics` (Goiás).
 
 ### 5.3.2 Instância central (API)
 
@@ -352,7 +375,7 @@ O frontend possui configuração própria em `front/.env`. O navegador não util
 
 | Variável             | Padrão              | Descrição                                |
 |----------------------|---------------------|------------------------------------------|
-| `MQTT_BROKER`        | broker.hivemq.com   | Endereço do broker MQTT                  |
+| `MQTT_BROKER`        | localhost           | Endereço do broker MQTT (o compose sobrescreve por serviço) |
 | `MQTT_PORT`          | 1883                | Porta TCP do broker                      |
 | `MQTT_TOPIC_BASE`    | sentinela-iot-2026-joao-carol/monitoramento-br | Namespace isolado do projeto |
 | `FIRMS_MAP_KEY`      | —                   | **Obrigatório**: chave de acesso NASA FIRMS |
@@ -372,84 +395,37 @@ O frontend possui configuração própria em `front/.env`. O navegador não util
 
 ### 5.6 Simulação de Incêndio (Mock)
 
-O `sensor.py` permite forçar uma zona específica a publicar valores fixos de
+As estações simuladas permitem forçar uma zona a publicar valores fixos de
 incêndio crítico (fumaça alta, umidade baixa, temperatura alta), ignorando
-Open-Meteo/FIRMS só para ela — as demais zonas continuam com dados reais.
-Útil para demonstrar o fluxo completo (sensor → gateway → alerta → atuador)
-sem depender de um incêndio real acontecendo agora.
+Open-Meteo/FIRMS só para ela — as demais continuam com dados reais.
 
-Zonas disponíveis: `anapolis`, `formosa`, `pirinopolis`, `jaragua`,
-`sandolandia`, `novo-progresso`, `mirador`, `mateiros`, `lagoa-da-confusao`.
+Zonas disponíveis (ver `plataforma/simuladores/zonas.py`): `anapolis`,
+`formosa`, `pirenopolis`, `jaragua`, `sandolandia`, `mateiros`,
+`lagoa-da-confusao` (atrás de nós de borda) e `novo-progresso`, `mirador`
+(conexão direta).
 
-**Opção A — no boot, via `.env`** (fixo até reiniciar o processo/container):
-
-```bash
-# No .env da raiz
-MOCK_ZONA_INCENDIO=mateiros
-MOCK_TEMPERATURA=42.0
-MOCK_UMIDADE=10.0
-MOCK_FUMACA=93.0
-```
+**Em tempo real, via `mock_incendio.py`** (não precisa reiniciar nada):
 
 ```bash
-# Local
-python plataforma/simuladores/estacao/sensor.py
-
-# Docker — precisa recriar o container do sensor pra ler o .env atualizado
-docker compose up -d --force-recreate sensor
-```
-
-**Opção B — em tempo real, via `mock_incendio.py`** (não precisa reiniciar
-nada; funciona com o sensor local ou dentro do Docker). O script publica no
-mesmo tópico de comando que o `sensor.py` assina (`{MQTT_TOPIC_BASE}/comando/mock`):
-
-```bash
-# Ligar o mock em mateiros com os defaults do .env
 python plataforma/simuladores/mock_incendio.py on mateiros
-
-# Ligar com valores customizados (todos opcionais)
 python plataforma/simuladores/mock_incendio.py on mateiros --temperatura 45 --umidade 5 --fumaca 98
-
-# Ligar reposicionando o marcador no mapa (--lat/--lon juntos)
-python plataforma/simuladores/mock_incendio.py on mateiros --lat -10.55 --lon -46.30
-
-# Desligar (a zona volta a buscar dados reais e a coordenada real, ~3s)
+python plataforma/simuladores/mock_incendio.py on mateiros --lat -10.55 --lon -46.30   # foco FIRMS no ponto
 python plataforma/simuladores/mock_incendio.py off
 ```
 
-Sem instalar nada além do `plataforma/requirements.txt` — é o mesmo `paho-mqtt` que o
-resto do projeto já usa. Se preferir publicar manualmente (sem o script),
-o payload é `{"ativo": true, "zona": "<zona>", "temperatura": ..., "umidade": ..., "fumaca": ..., "lat": ..., "lon": ...}`
-para ligar ou `{"ativo": false}` para desligar, publicado no tópico acima —
-via [Mosquitto CLI](https://mosquitto.org/) (`mosquitto_pub -h broker.hivemq.com -p 1883 -t '<tópico>' -m '<payload>'`),
-Python (`paho.mqtt.publish.single(...)`) ou qualquer outro client MQTT.
+O script publica no tópico de controle `simulacao/mock` do broker por onde a
+zona fala com a plataforma (borda da região, portas 1884/1885 na máquina, ou a
+central, 1883) e também no da central, onde o conector FIRMS escuta. Com
+`lat`/`lon`, a coordenada vai no campo `local.geo` das mensagens da estação e o
+conector **fabrica uma detecção de satélite** exatamente ali, publicada na hora.
+A coordenada precisa cair dentro do raio de busca FIRMS da zona
+(`FIRMS_RAIO_GRAUS`); fora disso o script recusa antes de publicar.
 
-`lat`/`lon` são opcionais e devem ser enviados juntos. Quando presentes, o
-`sensor.py` republica a coordenada nos tópicos `.../sensor/lat` e `.../sensor/lon`
-(o front já assina `.../sensor/+`, então o marcador da zona se move no mapa sem
-recarregar a página), e o `gateway.py` — que também assina o tópico de comando —
-passa a consultar o FIRMS nessa coordenada em vez da real, enquanto o mock
-estiver ativo. Ao desligar, ambos voltam automaticamente para a coordenada
-real de `ZONA_COORDS`.
+**No boot, via `.env`** (`MOCK_ZONA_INCENDIO=mateiros` etc.): vale até recriar o
+contêiner das estações da região (`docker compose up -d --force-recreate estacoes-tocantins`).
 
-A coordenada customizada precisa cair dentro do raio de busca FIRMS da zona
-(`FIRMS_RAIO_GRAUS`, o mesmo raio do círculo tracejado no mapa) — fora disso,
-`mock_incendio.py` já recusa localmente antes de publicar; se alguém publicar
-direto no MQTT sem passar pelo CLI, o `sensor.py` e o `gateway.py` também
-validam e ignoram a coordenada (mantendo a posição real), sem deixar de
-aplicar os demais valores mockados (temperatura/umidade/fumaça).
-
-Com `lat`/`lon` definidos, o `gateway.py` também **fabrica uma confirmação de
-satélite** na coordenada exata do mock (em vez de consultar a API real da
-NASA, que não teria foco nenhum ali) — assim o pin de "foco FIRMS" aparece no
-mapa (`FirmsMarkers` em `LeafletMapCore.tsx`), com popup de FRP/satélite/confiança,
-igual apareceria com uma detecção real. Isso só acontece na próxima varredura
-FIRMS da zona, respeitando o cooldown normal (`FIRMS_COOLDOWN_SEG`, padrão 600s
-— pode levar até esse tempo pra aparecer).
-
-No terminal do `sensor.py` (ou `docker compose logs -f sensor`), a zona mockada
-aparece marcada com `[MOCK INCÊNDIO]`; no MQTT, o payload publicado traz
-`"fonte": "mock"` em vez de `"open-meteo"`/`"firms-proxy"`.
+Nos logs das estações, a zona mockada aparece com `[MOCK INCÊNDIO]`; as
+mensagens trazem `"fonte": "mock"`.
 
 ---
 
@@ -469,7 +445,7 @@ As zonas monitoradas cobrem localidades de Goiás, Tocantins, Pará e Maranhão:
 | Mateiros          | TO | -10.5464  | -46.4168  | TO-MA-08  | Destaque nacional de área queimada em 2025 |
 | Lagoa da Confusão | TO | -10.7906  | -49.6199  | TO-LC-09  | Destaque nacional de área queimada em 2025 |
 
-A seleção dos três destaques adicionais usa o recorte de **área queimada municipal em 2025** divulgado pelo MapBiomas Fogo, e não uma afirmação permanente sobre a quantidade de focos. Rankings variam conforme período e indicador. Como “Amazônia” é uma região extensa, Novo Progresso (PA) permanece como ponto representativo. Para alterar coordenadas, mantenha `sensor.py`, `gateway.py`, `iot.ts` e `sim.ts` sincronizados.
+A seleção dos três destaques adicionais usa o recorte de **área queimada municipal em 2025** divulgado pelo MapBiomas Fogo, e não uma afirmação permanente sobre a quantidade de focos. Rankings variam conforme período e indicador. Como “Amazônia” é uma região extensa, Novo Progresso (PA) permanece como ponto representativo. Para alterar coordenadas, edite `plataforma/simuladores/zonas.py` e o seed da central (`plataforma/central/seeds/seed.py`); o front ainda tem cópias em `iot.ts` e `sim.ts` até a etapa A5.
 
 ---
 
@@ -515,12 +491,17 @@ projeto-iot/
 │   ├── contratos/            # Contrato canônico: JSON Schema, AsyncAPI e exemplos
 │   ├── nucleo/               # Domínio compartilhado central + borda (mensagem, tópicos, validação, geo)
 │   ├── central/              # Instância central (FastAPI): ingestão, catálogo, dispositivos, migrations, seed
-│   ├── borda/gateway.py      # Motor de regras + integração NASA FIRMS + alertas (vira o nó fog)
-│   ├── simuladores/
-│   │   ├── estacao/sensor.py     # Coleta Open-Meteo/FIRMS e publica via MQTT
-│   │   ├── atuador/atuador.py    # Recebe comandos e executa ações de resposta
-│   │   └── mock_incendio.py      # CLI para ligar/desligar o mock de incêndio em tempo real (ver 5.6)
-│   ├── infra/mosquitto/      # Configuração do broker próprio
+│   ├── borda/                # Nó de borda (fog): fila cifrada, regras locais, sincronização
+│   ├── simuladores/          # Dispositivos simulados (edge) e roteiro de demonstração
+│   │   ├── zonas.py              # Tabela única das zonas e da região (borda) de cada uma
+│   │   ├── estacao/sensor.py     # Estações: Open-Meteo/FIRMS + ruído, mensagem canônica
+│   │   ├── atuador/atuador.py    # Atuadores da brigada: comando → ação → evento
+│   │   ├── conector_firms/       # Conector NASA FIRMS (nível 3) → formato canônico
+│   │   ├── terminal_go/          # Terminal de alerta das prefeituras (Go)
+│   │   ├── demo/                 # Cadastro do domínio urbano e corte de link
+│   │   └── mock_incendio.py      # CLI para ligar/desligar o mock de incêndio (ver 5.6)
+│   ├── legado/ponte_front.py # TEMPORÁRIO: barramento novo → tópicos do painel antigo
+│   ├── infra/mosquitto/      # Brokers da central e das bordas (com bridge)
 │   ├── tests/                # Testes do núcleo e de contrato (pytest)
 │   ├── Dockerfile            # Imagem Python compartilhada (estação/gateway/atuador)
 │   ├── pyproject.toml        # Pacote nucleo + configuração de pytest/ruff

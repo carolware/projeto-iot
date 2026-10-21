@@ -1,13 +1,28 @@
+# Topologia edge → fog → cloud (ver plano, seção "Arquitetura Edge → Fog → Cloud")
+#
+#   rede campo-tocantins:  estações + atuadores ── mosquitto-borda-tocantins ── borda-tocantins ─┐
+#   rede campo-goias:      estações + atuadores ── mosquitto-borda-goias ───── borda-goias ─────┤ rede nuvem
+#   zonas sem borda (PA/MA) e terminais das prefeituras falam direto com a central ───────────────┘
+#
+# Para simular a queda do link de uma fazenda:  sh plataforma/simuladores/demo/link.sh off tocantins
+
+x-plataforma: &plataforma
+  image: sentinela/plataforma:dev   # uma imagem para todos os serviços Python
+  build:
+    context: ./plataforma
+  restart: unless-stopped
+
 services:
   # ── Cloud: instância central ───────────────────────────────────────────────
   mosquitto-central:
     image: eclipse-mosquitto:2.0.20
     ports:
-      - "1883:1883"   # MQTT (dispositivos, bordas, scripts locais)
+      - "1883:1883"   # MQTT (dispositivos diretos, bridges das bordas, scripts locais)
       - "9001:9001"   # MQTT sobre WebSocket (navegador)
     volumes:
       - ./plataforma/infra/mosquitto/central/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto-central-data:/mosquitto/data
+    networks: [nuvem]
     restart: unless-stopped
 
   postgres:
@@ -25,11 +40,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks: [nuvem]
     restart: unless-stopped
 
   central:
-    build:
-      context: ./plataforma
+    <<: *plataforma
     # migrations + seed (idempotentes) antes de subir a API
     command: >
       sh -c "alembic -c central/alembic.ini upgrade head
@@ -39,6 +54,7 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinela}:${POSTGRES_PASSWORD:-sentinela}@postgres:5432/${POSTGRES_DB:-sentinela}
       MQTT_BROKER: mosquitto-central
       MQTT_PORT: "1883"
+      CENTRAL_MQTT_CLIENT_ID: central-ingestao   # sessão persistente no broker
     ports:
       - "8000:8000"   # API REST + Swagger em /docs
     depends_on:
@@ -46,44 +62,163 @@ services:
         condition: service_healthy
       mosquitto-central:
         condition: service_started
-    restart: unless-stopped
+    networks: [nuvem]
 
-  # ── Fog: nó de borda (hoje ainda o gateway; ver plano, etapa A2) ───────────
-  gateway:
-    build:
-      context: ./plataforma
-    command: ["python", "borda/gateway.py"]
+  conector-firms:
+    <<: *plataforma
+    command: ["python", "simuladores/conector_firms/conector.py"]
     env_file: .env
-    environment: &broker_central
+    environment:
       MQTT_BROKER: mosquitto-central
       MQTT_PORT: "1883"
-    depends_on:
-      - mosquitto-central
-      - atuador
+    depends_on: [mosquitto-central]
+    networks: [nuvem]
+
+  # ── Fog: nós de borda (um por região rural) ────────────────────────────────
+  mosquitto-borda-tocantins:
+    image: eclipse-mosquitto:2.0.20
+    ports:
+      - "1884:1883"
+    volumes:
+      - ./plataforma/infra/mosquitto/borda-tocantins/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-borda-tocantins-data:/mosquitto/data
+    depends_on: [mosquitto-central]
+    networks: [campo-tocantins, nuvem]
     restart: unless-stopped
+
+  borda-tocantins:
+    <<: *plataforma
+    command: ["python", "-m", "borda.app"]
+    environment:
+      BORDA_ID: borda-tocantins
+      BORDA_SITES: mateiros,lagoa-da-confusao,sandolandia
+      BORDA_CHAVE: ${BORDA_CHAVE_TOCANTINS:?defina BORDA_CHAVE_TOCANTINS no .env}
+      BORDA_FILA: /dados/fila.db
+      MQTT_BROKER: mosquitto-borda-tocantins
+      CENTRAL_URL: http://central:8000
+    ports:
+      - "9101:9100"   # métricas Prometheus
+    volumes:
+      - borda-tocantins-dados:/dados
+    depends_on: [mosquitto-borda-tocantins, central]
+    networks: [campo-tocantins, nuvem]
+
+  mosquitto-borda-goias:
+    image: eclipse-mosquitto:2.0.20
+    ports:
+      - "1885:1883"
+    volumes:
+      - ./plataforma/infra/mosquitto/borda-goias/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-borda-goias-data:/mosquitto/data
+    depends_on: [mosquitto-central]
+    networks: [campo-goias, nuvem]
+    restart: unless-stopped
+
+  borda-goias:
+    <<: *plataforma
+    command: ["python", "-m", "borda.app"]
+    environment:
+      BORDA_ID: borda-goias
+      BORDA_SITES: anapolis,formosa,pirenopolis,jaragua
+      BORDA_CHAVE: ${BORDA_CHAVE_GOIAS:?defina BORDA_CHAVE_GOIAS no .env}
+      BORDA_FILA: /dados/fila.db
+      MQTT_BROKER: mosquitto-borda-goias
+      CENTRAL_URL: http://central:8000
+    ports:
+      - "9102:9100"
+    volumes:
+      - borda-goias-dados:/dados
+    depends_on: [mosquitto-borda-goias, central]
+    networks: [campo-goias, nuvem]
 
   # ── Edge: dispositivos simulados ───────────────────────────────────────────
-  atuador:
-    build:
-      context: ./plataforma
-    command: ["python", "simuladores/atuador/atuador.py"]
-    env_file: .env
-    environment: *broker_central
-    depends_on:
-      - mosquitto-central
-    restart: unless-stopped
-
-  sensor:
-    build:
-      context: ./plataforma
+  estacoes-tocantins:
+    <<: *plataforma
     command: ["python", "simuladores/estacao/sensor.py"]
     env_file: .env
-    environment: *broker_central
-    depends_on:
-      - gateway
+    environment:
+      ZONAS: mateiros,lagoa-da-confusao,sandolandia
+      MQTT_BROKER: mosquitto-borda-tocantins
+    depends_on: [mosquitto-borda-tocantins]
+    networks: [campo-tocantins]
+
+  atuadores-tocantins:
+    <<: *plataforma
+    command: ["python", "simuladores/atuador/atuador.py"]
+    env_file: .env
+    environment:
+      ZONAS: mateiros,lagoa-da-confusao,sandolandia
+      MQTT_BROKER: mosquitto-borda-tocantins
+    depends_on: [mosquitto-borda-tocantins]
+    networks: [campo-tocantins]
+
+  estacoes-goias:
+    <<: *plataforma
+    command: ["python", "simuladores/estacao/sensor.py"]
+    env_file: .env
+    environment:
+      ZONAS: anapolis,formosa,pirenopolis,jaragua
+      MQTT_BROKER: mosquitto-borda-goias
+    depends_on: [mosquitto-borda-goias]
+    networks: [campo-goias]
+
+  atuadores-goias:
+    <<: *plataforma
+    command: ["python", "simuladores/atuador/atuador.py"]
+    env_file: .env
+    environment:
+      ZONAS: anapolis,formosa,pirenopolis,jaragua
+      MQTT_BROKER: mosquitto-borda-goias
+    depends_on: [mosquitto-borda-goias]
+    networks: [campo-goias]
+
+  # zonas com conexão direta (sem nó de borda)
+  estacoes-diretas:
+    <<: *plataforma
+    command: ["python", "simuladores/estacao/sensor.py"]
+    env_file: .env
+    environment:
+      ZONAS: novo-progresso,mirador
+      MQTT_BROKER: mosquitto-central
+    depends_on: [mosquitto-central]
+    networks: [nuvem]
+
+  atuadores-diretos:
+    <<: *plataforma
+    command: ["python", "simuladores/atuador/atuador.py"]
+    env_file: .env
+    environment:
+      ZONAS: novo-progresso,mirador
+      MQTT_BROKER: mosquitto-central
+    depends_on: [mosquitto-central]
+    networks: [nuvem]
+
+  # terminais de alerta das prefeituras (Go) — cadastrados por
+  # plataforma/simuladores/demo/cadastrar_alerta_publico.py
+  terminais:
+    build:
+      context: ./plataforma
+      dockerfile: simuladores/terminal_go/Dockerfile
+    environment:
+      MQTT_BROKER: mosquitto-central
+      AUTO_RECONHECER_S: "20"
+      TERMINAIS: >-
+        pref-anapolis/defesa-civil/alerta_publico/terminal-dc-anapolis,pref-anapolis/bombeiros/alerta_publico/terminal-bm-anapolis,pref-formosa/defesa-civil/alerta_publico/terminal-dc-formosa,pref-formosa/bombeiros/alerta_publico/terminal-bm-formosa,pref-pirenopolis/defesa-civil/alerta_publico/terminal-dc-pirenopolis,pref-pirenopolis/bombeiros/alerta_publico/terminal-bm-pirenopolis,pref-jaragua/defesa-civil/alerta_publico/terminal-dc-jaragua,pref-jaragua/bombeiros/alerta_publico/terminal-bm-jaragua
+    depends_on: [mosquitto-central]
+    networks: [nuvem]
     restart: unless-stopped
 
   # ── Aplicação ──────────────────────────────────────────────────────────────
+  # TEMPORÁRIO até a etapa A5: traduz o barramento novo para os tópicos do painel antigo
+  ponte-front:
+    <<: *plataforma
+    command: ["python", "-m", "legado.ponte_front"]
+    env_file: .env
+    environment:
+      MQTT_BROKER: mosquitto-central
+    depends_on: [mosquitto-central]
+    networks: [nuvem]
+
   front:
     build:
       context: ./front
@@ -92,10 +227,19 @@ services:
         VITE_MQTT_URL: ${VITE_MQTT_URL:-ws://localhost:9001}
     ports:
       - "3000:3000"
-    depends_on:
-      - mosquitto-central
+    depends_on: [mosquitto-central]
+    networks: [nuvem]
     restart: unless-stopped
+
+networks:
+  nuvem:
+  campo-tocantins:
+  campo-goias:
 
 volumes:
   mosquitto-central-data:
+  mosquitto-borda-tocantins-data:
+  mosquitto-borda-goias-data:
+  borda-tocantins-dados:
+  borda-goias-dados:
   postgres-data:

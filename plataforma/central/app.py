@@ -33,7 +33,7 @@ def criar_app(cfg: Configuracao | None = None) -> FastAPI:
     @asynccontextmanager
     async def ciclo_de_vida(app: FastAPI):
         engine = criar_engine(cfg.database_url)
-        mqtt = AdaptadorMqtt(cfg.mqtt_broker, cfg.mqtt_port) if cfg.mqtt_ingestao else None
+        mqtt = AdaptadorMqtt(cfg.mqtt_broker, cfg.mqtt_port, cfg.mqtt_client_id) if cfg.mqtt_ingestao else None
         app.state.engine = engine
         app.state.pipeline = PipelineIngestao(
             CatalogoPostgres(engine),

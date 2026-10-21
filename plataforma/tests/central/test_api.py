@@ -248,7 +248,7 @@ def test_alteracao_de_dispositivo_fica_na_auditoria(cliente):
         "/api/v1/auditoria", params={"entidade": "dispositivo", "tamanho": 1}, headers=BRIGADA
     ).json()["itens"]
     assert registro["autor"] == "teste@sentinela" and registro["acao"] == "atualizar"
-    assert (registro["antes"]["firmware"], registro["depois"]["firmware"]) == ("sensor.py", "sensor.py 2.0")
+    assert (registro["antes"]["firmware"], registro["depois"]["firmware"]) == (None, "sensor.py 2.0")
 
 
 def test_cadastro_duplicado_e_referencia_invalida(cliente):
@@ -301,3 +301,15 @@ def test_contratos_publicados_por_url(cliente):
     assert cliente.get("/contratos/../config.py").status_code == 404
     rotas = cliente.get("/openapi.json").json()["paths"]
     assert {"/api/v1/ingestao", "/api/v1/ingestao/lote", "/api/v1/dispositivos/{slug}/telemetria"} <= set(rotas)
+
+
+def test_borda_informa_estado_e_painel_mostra_tempo_sem_sincronizar(cliente):
+    """RF-EDG-06: o painel mostra há quanto tempo cada nó está sem sincronizar."""
+    assert (
+        cliente.put("/api/v1/bordas/borda-goias/estado", json={"fila_pendente": 42, "versao": "0.2.0"}).status_code
+        == 204
+    )
+    assert cliente.put("/api/v1/bordas/nao-existe/estado", json={"fila_pendente": 0}).status_code == 404
+    bordas = {b["slug"]: b for b in cliente.get("/api/v1/bordas", headers=BRIGADA).json()["itens"]}
+    assert bordas["borda-goias"]["fila_pendente"] == 42 and bordas["borda-goias"]["segundos_sem_sincronizar"] < 5
+    assert bordas["borda-tocantins"]["segundos_sem_sincronizar"] is None

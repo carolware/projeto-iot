@@ -14,6 +14,7 @@ COPY nucleo ./nucleo
 COPY contratos ./contratos
 COPY central ./central
 COPY borda ./borda
+COPY legado ./legado
 COPY simuladores ./simuladores
 
 CMD ["python", "simuladores/estacao/sensor.py"]

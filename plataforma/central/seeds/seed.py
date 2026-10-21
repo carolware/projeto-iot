@@ -3,7 +3,8 @@ seed.py — dados iniciais da demonstração. Idempotente: rodar de novo não
 duplica nada (é executado a cada subida do contêiner da central).
 
 - Rural: inquilino `brigada-cerrado`, domínio `incendio`, as 9 zonas como
-  sites, uma estação simulada por zona e os nós de borda (fog).
+  sites; por zona uma estação, um atuador da brigada e um conector FIRMS
+  (todos simulados); e os nós de borda (fog).
 - Urbano: as prefeituras e seus locais de resgate (prefeitura, Defesa Civil,
   bombeiros). O domínio `alerta_publico` e os terminais NÃO entram aqui: são
   criados pela API na demonstração, para provar que um domínio novo nasce só
@@ -54,15 +55,23 @@ LOCAIS_RESGATE = {
     "bombeiros": ("Corpo de Bombeiros", -0.010, 0.007),
 }
 
-PERFIL_ESTACAO = {
-    "slug": "estacao-incendio",
-    "nome": "Estação de detecção de incêndio",
-    "intervalo_esperado_s": 10,
-    "grandezas": [
-        ("temperatura", "Cel", -10, 60),
-        ("umidade", "%", 0, 100),
-        ("fumaca", "1", 0, 100),
-    ],
+# perfil → (nome, intervalo esperado em s, tipo de dispositivo, prefixo do slug, grandezas)
+PERFIS_RURAIS = {
+    "estacao-incendio": (
+        "Estação de detecção de incêndio",
+        10,
+        "estacao",
+        "est-{zona}-01",
+        [("temperatura", "Cel", -10, 60), ("umidade", "%", 0, 100), ("fumaca", "1", 0, 100)],
+    ),
+    "atuador-brigada": ("Atuador da brigada local", 30, "atuador", "atuador-{zona}-01", []),
+    "conector-firms": (
+        "Conector NASA FIRMS (focos de calor por satélite)",
+        600,
+        "conector",
+        "firms-{zona}",
+        [("focos", "1", 0, None), ("frp_max", "MW", 0, None), ("distancia_km", "km", 0, None)],
+    ),
 }
 
 
@@ -84,18 +93,20 @@ def semear(conexao: Connection) -> None:
         {"inquilino_id": brigada, "slug": "incendio"},
         {"nome": "Incêndio florestal", "descricao": "Detecção de risco de incêndio por estações e satélite"},
     )
-    perfil = _garantir(
-        conexao,
-        db.perfil_dispositivo,
-        {"dominio_id": incendio, "slug": PERFIL_ESTACAO["slug"]},
-        {"nome": PERFIL_ESTACAO["nome"], "intervalo_esperado_s": PERFIL_ESTACAO["intervalo_esperado_s"]},
-    )
-    for grandeza, unidade, minimo, maximo in PERFIL_ESTACAO["grandezas"]:
-        conexao.execute(
-            insert(db.perfil_grandeza)
-            .values(perfil_id=perfil, grandeza=grandeza, unidade=unidade, valor_min=minimo, valor_max=maximo)
-            .on_conflict_do_nothing()
+    perfis = {}
+    for slug, (nome, intervalo, _tipo, _padrao, grandezas) in PERFIS_RURAIS.items():
+        perfis[slug] = _garantir(
+            conexao,
+            db.perfil_dispositivo,
+            {"dominio_id": incendio, "slug": slug},
+            {"nome": nome, "intervalo_esperado_s": intervalo},
         )
+        for grandeza, unidade, minimo, maximo in grandezas:
+            conexao.execute(
+                insert(db.perfil_grandeza)
+                .values(perfil_id=perfis[slug], grandeza=grandeza, unidade=unidade, valor_min=minimo, valor_max=maximo)
+                .on_conflict_do_nothing()
+            )
     for slug, nome in BORDAS.items():
         _garantir(conexao, db.no_borda, {"slug": slug}, {"inquilino_id": brigada, "nome": nome, "versao": "0.1.0"})
     for zona, (nome, lat, lon, _borda) in ZONAS.items():
@@ -105,20 +116,20 @@ def semear(conexao: Connection) -> None:
             {"inquilino_id": brigada, "slug": zona},
             {"nome": nome, "lat": lat, "lon": lon, "raio_km": 16.7},
         )
-        _garantir(
-            conexao,
-            db.dispositivo,
-            {"slug": f"est-{zona}-01"},
-            {
-                "inquilino_id": brigada,
-                "perfil_id": perfil,
-                "site_id": site,
-                "nome": f"Estação {nome}",
-                "tipo": "estacao",
-                "fabricante": "simulador",
-                "firmware": "sensor.py",
-            },
-        )
+        for perfil, (nome_perfil, _intervalo, tipo, padrao, _grandezas) in PERFIS_RURAIS.items():
+            _garantir(
+                conexao,
+                db.dispositivo,
+                {"slug": padrao.format(zona=zona)},
+                {
+                    "inquilino_id": brigada,
+                    "perfil_id": perfis[perfil],
+                    "site_id": site,
+                    "nome": f"{nome_perfil.split(' (')[0]} — {nome}",
+                    "tipo": tipo,
+                    "fabricante": "simulador",
+                },
+            )
 
     # ── Urbano ──
     for slug, (nome, lat, lon) in PREFEITURAS.items():

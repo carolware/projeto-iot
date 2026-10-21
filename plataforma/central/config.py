@@ -15,6 +15,7 @@ class Configuracao:
     mqtt_broker: str
     mqtt_port: int
     mqtt_ingestao: bool
+    mqtt_client_id: str | None = None
 
 
 def _url_padrao() -> str:
@@ -33,4 +34,5 @@ def configuracao() -> Configuracao:
         mqtt_broker=os.getenv("MQTT_BROKER", "localhost"),
         mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
         mqtt_ingestao=os.getenv("CENTRAL_MQTT", "1") == "1",
+        mqtt_client_id=os.getenv("CENTRAL_MQTT_CLIENT_ID") or None,
     )

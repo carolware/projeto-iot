@@ -47,10 +47,17 @@ class BarramentoMqtt:
 class AdaptadorMqtt:
     TIPOS_INGERIDOS = ("telemetria", "evento", "estado")
 
-    def __init__(self, broker: str, porta: int):
+    def __init__(self, broker: str, porta: int, client_id: str | None = None, inquilinos: list[str] | None = None):
         self.broker = broker
         self.porta = porta
-        self.cliente = mqtt.Client(client_id=f"central-{uuid.uuid4().hex[:10]}", clean_session=True)
+        # None = todos; uma lista permite repartir os inquilinos entre réplicas da central (RNF-09)
+        self.inquilinos = inquilinos or ["+"]
+        # client_id estável + sessão persistente: o broker guarda as mensagens QoS 1 que
+        # chegarem enquanto a central reinicia, e elas são ingeridas na volta (RNF-10)
+        persistente = client_id is not None
+        self.cliente = mqtt.Client(
+            client_id=client_id or f"central-{uuid.uuid4().hex[:10]}", clean_session=not persistente
+        )
         self.pipeline: PipelineIngestao | None = None
         self.cliente.on_connect = self._ao_conectar
         self.cliente.on_message = self._ao_receber
@@ -69,7 +76,8 @@ class AdaptadorMqtt:
             log.error("Falha ao conectar no broker %s:%d (rc=%d)", self.broker, self.porta, rc)
             return
         for tipo in self.TIPOS_INGERIDOS:
-            cliente.subscribe(padrao_assinatura(tipo), qos=1)
+            for inquilino in self.inquilinos:
+                cliente.subscribe(padrao_assinatura(tipo, inquilino), qos=1)
         log.info("Ingestão MQTT ativa em %s:%d", self.broker, self.porta)
 
     def _ao_receber(self, cliente: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:

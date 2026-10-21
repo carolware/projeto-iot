@@ -5,9 +5,9 @@ auditoria (RF-DAD-06) e situação dos nós de borda (RF-EDG-06).
 
 from datetime import datetime
 
-from fastapi import APIRouter
-from pydantic import BaseModel
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select, update
 
 from central import db
 from central.api.comum import Banco, Contexto, Pagina, ParametrosPagina, paginar
@@ -39,6 +39,12 @@ class NoBorda(BaseModel):
     versao: str | None
     fila_pendente: int
     ultimo_sync_em: datetime | None
+    segundos_sem_sincronizar: float | None
+
+
+class EstadoBorda(BaseModel):
+    fila_pendente: int = Field(ge=0)
+    versao: str | None = None
 
 
 @router.get("/dlq", response_model=Pagina[MensagemInvalida], tags=["Administração"])
@@ -69,8 +75,25 @@ def listar_auditoria(banco: Banco, ctx: Contexto, pag: ParametrosPagina, entidad
 @router.get("/bordas", response_model=Pagina[NoBorda])
 def listar_bordas(banco: Banco, ctx: Contexto, pag: ParametrosPagina):
     b = db.no_borda
-    consulta = select(b.c.slug, b.c.nome, b.c.versao, b.c.fila_pendente, b.c.ultimo_sync_em).where(
-        b.c.inquilino_id == ctx.id
-    )
+    consulta = select(
+        b.c.slug,
+        b.c.nome,
+        b.c.versao,
+        b.c.fila_pendente,
+        b.c.ultimo_sync_em,
+        func.extract("epoch", func.now() - b.c.ultimo_sync_em).label("segundos_sem_sincronizar"),
+    ).where(b.c.inquilino_id == ctx.id)
     with banco.connect() as conexao:
         return paginar(conexao, consulta, pag, {"slug": b.c.slug, "ultimo_sync_em": b.c.ultimo_sync_em}, "slug")
+
+
+@router.put("/bordas/{slug}/estado", status_code=204, summary="Nó de borda informa fila pendente e versão")
+def informar_estado_borda(banco: Banco, slug: str, estado: EstadoBorda):
+    # autenticação do nó por credencial própria entra na etapa A4 (RF-SEG-05)
+    b = db.no_borda
+    with banco.begin() as conexao:
+        alterados = conexao.execute(
+            update(b).where(b.c.slug == slug).values(ultimo_sync_em=func.now(), **estado.model_dump(exclude_none=True))
+        ).rowcount
+    if not alterados:
+        raise HTTPException(404, f"nó de borda {slug!r} não cadastrado")
