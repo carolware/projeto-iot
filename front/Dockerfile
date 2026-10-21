@@ -8,6 +8,15 @@ RUN npm ci
 
 COPY . .
 
+# Variáveis VITE_* são embutidas no bundle durante o build; as do ambiente
+# têm prioridade sobre o .env do front.
+ARG VITE_DATA_MODE=mqtt
+ARG VITE_MQTT_URL=ws://localhost:9001
+ARG VITE_MQTT_TOPIC_BASE=sentinela-iot-2026-joao-carol/monitoramento-br
+ENV VITE_DATA_MODE=$VITE_DATA_MODE \
+    VITE_MQTT_URL=$VITE_MQTT_URL \
+    VITE_MQTT_TOPIC_BASE=$VITE_MQTT_TOPIC_BASE
+
 # Fora do sandbox do Lovable, NITRO_PRESET sobrepõe o default (cloudflare-module)
 # do plugin @lovable.dev/vite-tanstack-config, gerando um server Node comum.
 ENV NITRO_PRESET=node-server

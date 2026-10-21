@@ -1,0 +1,11 @@
+paho-mqtt==1.6.1
+requests==2.32.3
+python-dotenv==1.0.1
+jsonschema==4.23.0
+
+# central (cloud)
+fastapi==0.157.0
+uvicorn[standard]==0.54.0
+SQLAlchemy==2.1.6
+psycopg[binary]==3.3.6
+alembic==1.20.0

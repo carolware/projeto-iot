@@ -1,0 +1,18 @@
+{
+  "versao": "1.0",
+  "id_mensagem": "b6d1e0c4-5f7a-4c2e-9d13-8a2f61c0e9b7",
+  "dispositivo": "est-mateiros-01",
+  "tipo": "telemetria",
+  "timestamp": "2026-10-19T05:10:00Z",
+  "via": "borda-tocantins",
+  "fonte": "open-meteo",
+  "local": {
+    "site": "mateiros",
+    "geo": { "type": "Point", "coordinates": [-46.4168, -10.5464] }
+  },
+  "medidas": [
+    { "grandeza": "temperatura", "valor": 34.2, "unidade": "Cel" },
+    { "grandeza": "umidade", "valor": 18.0, "unidade": "%" },
+    { "grandeza": "fumaca", "valor": 62.5, "unidade": "1" }
+  ]
+}

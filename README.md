@@ -32,7 +32,7 @@ No contexto da disciplina de Internet das Coisas, o presente trabalho propõe um
 │  CAMADA DADOS   │  Open-Meteo + NASA FIRMS por zona geográfica       │
 │                 │  Meteorologia real + índice estimado de fumaça     │
 ├─────────────────┼───────────────────────────────────────────────────┤
-│  CAMADA REDE    │  Broker MQTT (HiveMQ public / próprio)             │
+│  CAMADA REDE    │  Broker MQTT próprio (Eclipse Mosquitto)           │
 │                 │  Tópicos hierárquicos por zona e tipo              │
 ├─────────────────┼───────────────────────────────────────────────────┤
 │  CAMADA BORDA   │  Gateway: subscrição, avaliação de risco,          │
@@ -59,12 +59,12 @@ No contexto da disciplina de Internet das Coisas, o presente trabalho propõe um
 | **paho-mqtt** | Mensageria backend | Publica e consome mensagens MQTT sobre TCP na porta 1883. |
 | **Open-Meteo** | Fonte externa | Fornece temperatura e umidade atuais estimadas para as coordenadas monitoradas, sem exigir chave. |
 | **NASA FIRMS / VIIRS** | Fonte orbital | Fornece focos de calor, coordenadas e FRP em tempo quase real; não mede diretamente fumaça ou temperatura do ar. |
-| **HiveMQ Public Broker** | Infraestrutura MQTT | Intermedeia a comunicação publish/subscribe da demonstração. Por ser público, não é indicado para produção. |
+| **Eclipse Mosquitto** | Infraestrutura MQTT | Broker próprio (`mosquitto-central` no compose) que intermedeia o publish/subscribe; substitui o HiveMQ público usado na 1ª entrega. |
 | **React 19 + TypeScript** | Interface | Implementa os componentes reativos e a tipagem do dashboard. |
 | **TanStack Start/Router** | Aplicação web | Estrutura rotas, renderização no servidor (SSR), hidratação e build da aplicação. |
 | **Vite 8** | Ferramentas frontend | Executa o servidor de desenvolvimento e gera os bundles de produção. |
 | **Tailwind CSS 4** | Apresentação | Define layout responsivo, cores, tipografia e estados visuais. |
-| **mqtt.js** | Mensageria no navegador | Conecta o dashboard ao HiveMQ por MQTT sobre WebSocket seguro (`wss://...:8884/mqtt`). |
+| **mqtt.js** | Mensageria no navegador | Conecta o dashboard ao Mosquitto por MQTT sobre WebSocket (`ws://localhost:9001`). |
 | **Leaflet + React-Leaflet 5** | Geovisualização | Renderiza o mapa interativo, marcadores, popups, zoom e modo expandido. |
 | **OpenStreetMap + CARTO** | Cartografia | Fornecem os tiles e a base geográfica exibida pelo Leaflet. |
 | **Radix UI** | Componentes auxiliares | Disponibiliza primitivas acessíveis instaladas no frontend; o dashboard atual utiliza principalmente componentes próprios. |
@@ -268,8 +268,8 @@ python -m venv venv
 source venv/bin/activate        # Linux/macOS
 # venv\Scripts\activate         # Windows
 
-# Instalar dependências
-pip install -r requirements.txt
+# Instalar dependências (+ o pacote nucleo/ compartilhado em modo editável)
+pip install -r plataforma/requirements.txt -e plataforma
 
 # Configurar variáveis de ambiente
 cp .env.example .env
@@ -278,34 +278,64 @@ cp .env.example .env
 
 ### 5.3 Execução — Ordem Recomendada
 
-Abra três terminais separados na raiz do projeto:
+Suba o broker MQTT local (`docker compose up -d mosquitto-central`) e abra
+três terminais separados na raiz do projeto:
 
 ```bash
 # Terminal 1 — Atuador (deve estar pronto antes do gateway publicar)
-python atuador.py
+python plataforma/simuladores/atuador/atuador.py
 
 # Terminal 2 — Gateway (motor de regras + FIRMS)
-python gateway.py
+python plataforma/borda/gateway.py
 
 # Terminal 3 — Coletor de dados Open-Meteo/FIRMS
-python sensor.py
+python plataforma/simuladores/estacao/sensor.py
 ```
 
 ### 5.3.1 Alternativa: Docker Compose
 
-Com `.env` preenchido (passo 5.2), sobe os 4 serviços (`atuador`, `gateway`,
-`sensor`, `front`) de uma vez, sem precisar de venv/Node instalados na máquina:
+Com `.env` preenchido (passo 5.2), sobe o broker próprio (`mosquitto-central`),
+o banco (`postgres`, TimescaleDB), a instância central (`central`) e os serviços
+`atuador`, `gateway`, `sensor` e `front` de uma vez, sem precisar de venv/Node
+instalados na máquina:
 
 ```bash
 docker compose up -d --build
-docker compose logs -f          # acompanhar os 4 serviços
+docker compose logs -f          # acompanhar os serviços
 docker compose down             # parar tudo
 ```
 
 O front fica em `http://localhost:3000` (build de produção, não o dev server
-do Vite). As variáveis `VITE_*` de `front/.env` são compiladas no build da
-imagem — se você editar `front/.env`, recrie a imagem do front
-(`docker compose up -d --build front`) para o novo valor entrar em vigor.
+do Vite) e fala com o broker em `ws://localhost:9001`. As variáveis `VITE_*`
+são compiladas no build da imagem (o compose passa `VITE_MQTT_URL` como build
+arg) — se mudar alguma, recrie a imagem do front
+(`docker compose up -d --build front`).
+
+### 5.3.2 Instância central (API)
+
+O serviço `central` aplica as migrations, carrega o seed (idempotente) e sobe a
+API em `http://localhost:8000`:
+
+- Swagger (OpenAPI 3): `http://localhost:8000/docs`
+- Contratos: `http://localhost:8000/contratos/asyncapi.yaml` e
+  `http://localhost:8000/contratos/mensagem-canonica.v1.schema.json`
+- Ingestão: `POST /api/v1/ingestao` e `POST /api/v1/ingestao/lote`; também
+  assina MQTT nos tópicos `{inquilino}/{site}/{dominio}/{dispositivo}/{telemetria|evento|estado}`
+- Rotas por inquilino exigem o cabeçalho `X-Inquilino` (ex.: `brigada-cerrado`,
+  `pref-anapolis`) — provisório até a autenticação OIDC (etapa A4)
+
+```bash
+curl -X POST localhost:8000/api/v1/ingestao -H 'content-type: application/json' \
+     --data @plataforma/contratos/exemplos/telemetria-estacao.json
+curl localhost:8000/api/v1/dispositivos/est-mateiros-01/estado -H 'X-Inquilino: brigada-cerrado'
+```
+
+Testes (unidade + integração; os de integração usam o TimescaleDB do compose
+num banco descartável `sentinela_teste` e são pulados se ele estiver fora do ar):
+
+```bash
+cd plataforma && pip install -r requirements-dev.txt -e . && pytest --cov
+```
 
 ### 5.4 Frontend (Desenvolvimento Local)
 
@@ -363,7 +393,7 @@ MOCK_FUMACA=93.0
 
 ```bash
 # Local
-python sensor.py
+python plataforma/simuladores/estacao/sensor.py
 
 # Docker — precisa recriar o container do sensor pra ler o .env atualizado
 docker compose up -d --force-recreate sensor
@@ -375,19 +405,19 @@ mesmo tópico de comando que o `sensor.py` assina (`{MQTT_TOPIC_BASE}/comando/mo
 
 ```bash
 # Ligar o mock em mateiros com os defaults do .env
-python mock_incendio.py on mateiros
+python plataforma/simuladores/mock_incendio.py on mateiros
 
 # Ligar com valores customizados (todos opcionais)
-python mock_incendio.py on mateiros --temperatura 45 --umidade 5 --fumaca 98
+python plataforma/simuladores/mock_incendio.py on mateiros --temperatura 45 --umidade 5 --fumaca 98
 
 # Ligar reposicionando o marcador no mapa (--lat/--lon juntos)
-python mock_incendio.py on mateiros --lat -10.55 --lon -46.30
+python plataforma/simuladores/mock_incendio.py on mateiros --lat -10.55 --lon -46.30
 
 # Desligar (a zona volta a buscar dados reais e a coordenada real, ~3s)
-python mock_incendio.py off
+python plataforma/simuladores/mock_incendio.py off
 ```
 
-Sem instalar nada além do `requirements.txt` — é o mesmo `paho-mqtt` que o
+Sem instalar nada além do `plataforma/requirements.txt` — é o mesmo `paho-mqtt` que o
 resto do projeto já usa. Se preferir publicar manualmente (sem o script),
 o payload é `{"ativo": true, "zona": "<zona>", "temperatura": ..., "umidade": ..., "fumaca": ..., "lat": ..., "lon": ...}`
 para ligar ou `{"ativo": false}` para desligar, publicado no tópico acima —
@@ -481,14 +511,21 @@ Open-Meteo ──► coletor ──► MQTT sensor ──► gateway ──► r
 
 ```
 projeto-iot/
-├── sensor.py           # Coleta Open-Meteo/FIRMS e publica via MQTT
-├── gateway.py          # Motor de regras + integração NASA FIRMS + alertas
-├── atuador.py          # Recebe comandos e executa ações de resposta
-├── mock_incendio.py    # CLI para ligar/desligar o mock de incêndio em tempo real (ver 5.6)
-├── requirements.txt    # Dependências Python
-├── Dockerfile          # Imagem Python compartilhada (sensor/gateway/atuador)
-├── docker-compose.yml  # Orquestra os 4 serviços (backend + front)
-├── .dockerignore
+├── plataforma/               # Edge (simuladores), fog (borda), cloud (central), contratos e infra
+│   ├── contratos/            # Contrato canônico: JSON Schema, AsyncAPI e exemplos
+│   ├── nucleo/               # Domínio compartilhado central + borda (mensagem, tópicos, validação, geo)
+│   ├── central/              # Instância central (FastAPI): ingestão, catálogo, dispositivos, migrations, seed
+│   ├── borda/gateway.py      # Motor de regras + integração NASA FIRMS + alertas (vira o nó fog)
+│   ├── simuladores/
+│   │   ├── estacao/sensor.py     # Coleta Open-Meteo/FIRMS e publica via MQTT
+│   │   ├── atuador/atuador.py    # Recebe comandos e executa ações de resposta
+│   │   └── mock_incendio.py      # CLI para ligar/desligar o mock de incêndio em tempo real (ver 5.6)
+│   ├── infra/mosquitto/      # Configuração do broker próprio
+│   ├── tests/                # Testes do núcleo e de contrato (pytest)
+│   ├── Dockerfile            # Imagem Python compartilhada (estação/gateway/atuador)
+│   ├── pyproject.toml        # Pacote nucleo + configuração de pytest/ruff
+│   └── requirements.txt / requirements-dev.txt
+├── docker-compose.yml  # Mosquitto + TimescaleDB + plataforma + front
 ├── .env.example        # Template de variáveis de ambiente
 ├── .env                # Configuração local (não versionado)
 ├── .gitignore

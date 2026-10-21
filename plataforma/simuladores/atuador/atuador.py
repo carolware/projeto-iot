@@ -27,7 +27,7 @@ load_dotenv()
 # Configurações
 # ──────────────────────────────────────────────
 
-BROKER    = os.getenv("MQTT_BROKER", "broker.hivemq.com")
+BROKER    = os.getenv("MQTT_BROKER", "localhost")
 PORT      = int(os.getenv("MQTT_PORT", "1883"))
 CLIENT_ID = f"atuador-sentinela-{uuid.uuid4().hex[:10]}"
 TOPIC_BASE   = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")

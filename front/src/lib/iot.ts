@@ -24,7 +24,7 @@ export type { FeedEvent, FirmsHotspot, Risk, SimState, Zone } from "./sim";
 
 const DATA_MODE = import.meta.env.VITE_DATA_MODE ?? "mqtt";
 const MQTT_URL =
-  import.meta.env.VITE_MQTT_URL ?? "wss://broker.hivemq.com:8884/mqtt";
+  import.meta.env.VITE_MQTT_URL ?? "ws://localhost:9001";
 const TOPIC_BASE =
   import.meta.env.VITE_MQTT_TOPIC_BASE ??
   "sentinela-iot-2026-joao-carol/monitoramento-br";

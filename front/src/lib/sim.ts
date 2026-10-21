@@ -227,7 +227,7 @@ let state: SimState = {
       "TELEMETRIA ok",
       "novo-progresso/sensor {t:37,h:28,f:18}",
     ),
-    evt("sistema", "GATEWAY · boot", "broker=broker.hivemq.com:1883"),
+    evt("sistema", "GATEWAY · boot", "broker=mosquitto-central:1883"),
   ],
   log: [
     "[ .. ] sandolandia → risco=medio",

@@ -1,36 +1,101 @@
 services:
-  atuador:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["python", "atuador.py"]
-    env_file: .env
+  # ── Cloud: instância central ───────────────────────────────────────────────
+  mosquitto-central:
+    image: eclipse-mosquitto:2.0.20
+    ports:
+      - "1883:1883"   # MQTT (dispositivos, bordas, scripts locais)
+      - "9001:9001"   # MQTT sobre WebSocket (navegador)
+    volumes:
+      - ./plataforma/infra/mosquitto/central/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-central-data:/mosquitto/data
     restart: unless-stopped
 
+  postgres:
+    image: timescale/timescaledb:2.17.2-pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sentinela}
+      POSTGRES_USER: ${POSTGRES_USER:-sentinela}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinela}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"   # host:container (5433 evita conflito com Postgres local)
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  central:
+    build:
+      context: ./plataforma
+    # migrations + seed (idempotentes) antes de subir a API
+    command: >
+      sh -c "alembic -c central/alembic.ini upgrade head
+      && python -m central.seeds.seed
+      && uvicorn central.app:app --host 0.0.0.0 --port 8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinela}:${POSTGRES_PASSWORD:-sentinela}@postgres:5432/${POSTGRES_DB:-sentinela}
+      MQTT_BROKER: mosquitto-central
+      MQTT_PORT: "1883"
+    ports:
+      - "8000:8000"   # API REST + Swagger em /docs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto-central:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Fog: nó de borda (hoje ainda o gateway; ver plano, etapa A2) ───────────
   gateway:
     build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["python", "gateway.py"]
+      context: ./plataforma
+    command: ["python", "borda/gateway.py"]
     env_file: .env
+    environment: &broker_central
+      MQTT_BROKER: mosquitto-central
+      MQTT_PORT: "1883"
     depends_on:
+      - mosquitto-central
       - atuador
+    restart: unless-stopped
+
+  # ── Edge: dispositivos simulados ───────────────────────────────────────────
+  atuador:
+    build:
+      context: ./plataforma
+    command: ["python", "simuladores/atuador/atuador.py"]
+    env_file: .env
+    environment: *broker_central
+    depends_on:
+      - mosquitto-central
     restart: unless-stopped
 
   sensor:
     build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["python", "sensor.py"]
+      context: ./plataforma
+    command: ["python", "simuladores/estacao/sensor.py"]
     env_file: .env
+    environment: *broker_central
     depends_on:
       - gateway
     restart: unless-stopped
 
+  # ── Aplicação ──────────────────────────────────────────────────────────────
   front:
     build:
       context: ./front
       dockerfile: Dockerfile
+      args:
+        VITE_MQTT_URL: ${VITE_MQTT_URL:-ws://localhost:9001}
     ports:
       - "3000:3000"
+    depends_on:
+      - mosquitto-central
     restart: unless-stopped
+
+volumes:
+  mosquitto-central-data:
+  postgres-data:

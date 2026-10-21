@@ -13,7 +13,6 @@ import csv
 import io
 import json
 import logging
-import math
 import os
 import threading
 import time
@@ -25,13 +24,15 @@ import paho.mqtt.client as mqtt
 import requests
 from dotenv import load_dotenv
 
+from nucleo.geo import distancia_km
+
 load_dotenv()
 
 # ──────────────────────────────────────────────
 # Configurações gerais
 # ──────────────────────────────────────────────
 
-BROKER      = os.getenv("MQTT_BROKER", "broker.hivemq.com")
+BROKER      = os.getenv("MQTT_BROKER", "localhost")
 PORT        = int(os.getenv("MQTT_PORT", "1883"))
 CLIENT_ID   = f"gateway-sentinela-{uuid.uuid4().hex[:10]}"
 TOPIC_BASE  = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
@@ -178,7 +179,7 @@ def on_comando_mock(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> Non
         lat_f, lon_f = float(lat), float(lon)
         lat_real, lon_real = ZONA_COORDS[zona]
         raio_km = FIRMS_RAIO * 111
-        if _distancia_km(lat_real, lon_real, lat_f, lon_f) <= raio_km:
+        if distancia_km(lat_real, lon_real, lat_f, lon_f) <= raio_km:
             MOCK_LAT, MOCK_LON = lat_f, lon_f
             log.warning("[MOCK] FIRMS de %s passa a consultar @%.4f,%.4f", zona, MOCK_LAT, MOCK_LON)
         else:
@@ -192,19 +193,6 @@ def on_comando_mock(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> Non
 # ──────────────────────────────────────────────
 # Integração NASA FIRMS
 # ──────────────────────────────────────────────
-
-def _distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    raio_terra = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(dlon / 2) ** 2
-    )
-    return raio_terra * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
 
 def _resultado_firms_vazio(erro: str | None = None) -> dict:
     resultado = {
@@ -286,7 +274,7 @@ def consultar_firms(lat: float, lon: float) -> dict:
             data = registro.get("acq_date", "")
             hora = (registro.get("acq_time") or "").zfill(4)
             adquirido_em = f"{data}T{hora[:2]}:{hora[2:]}:00Z" if data and hora else None
-            distancia = round(_distancia_km(lat, lon, flat, flon), 2)
+            distancia = round(distancia_km(lat, lon, flat, flon), 2)
             hotspots.append({
                 "id": f"{registro.get('satellite', 'sat')}-{data}-{hora}-{indice}",
                 "latitude": round(flat, 5),

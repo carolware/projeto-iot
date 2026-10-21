@@ -1,0 +1,140 @@
+asyncapi: 3.0.0
+info:
+  title: Sentinela — Plataforma IoT Integrada (interface MQTT)
+  version: 1.0.0
+  description: |
+    Tópicos MQTT da plataforma (§4.5 do documento de requisitos).
+    Toda mensagem segue a mensagem canônica v1.0 (`mensagem-canonica.v1.schema.json`).
+
+    Hierarquia: `{inquilino}/{site}/{dominio}/{dispositivo}/{tipo}`.
+    O domínio é um valor do catálogo do inquilino (configurável, sem lista fixa).
+
+    Exemplos:
+    - rural: `brigada-cerrado/mateiros/incendio/est-mateiros-01/telemetria`
+    - urbano: `pref-anapolis/defesa-civil/alerta_publico/terminal-dc-01/comando`
+  license:
+    name: MIT
+
+defaultContentType: application/json
+
+servers:
+  central:
+    host: mosquitto-central:1883
+    protocol: mqtt
+    protocolVersion: 3.1.1
+    description: Broker da instância central (cloud). Recebe dos nós de borda e dos dispositivos urbanos.
+  central-ws:
+    host: localhost:9001
+    protocol: ws
+    description: Mesmo broker via WebSocket (navegador).
+  borda:
+    host: "{borda}:1883"
+    protocol: mqtt
+    protocolVersion: 3.1.1
+    description: Broker local de um nó de borda (fog). Dispositivos rurais publicam aqui; o nó guarda e sincroniza com a central.
+    variables:
+      borda:
+        enum: [mosquitto-borda-tocantins, mosquitto-borda-goias]
+        default: mosquitto-borda-tocantins
+
+channels:
+  telemetria:
+    address: "{inquilino}/{site}/{dominio}/{dispositivo}/telemetria"
+    description: Medições periódicas (dispositivo → plataforma).
+    parameters: &parametros
+      inquilino:
+        description: Slug do inquilino (ex.: brigada-cerrado, pref-anapolis).
+      site:
+        description: Slug do local (ex.: mateiros, defesa-civil).
+      dominio:
+        description: Slug do domínio no catálogo do inquilino (ex.: incendio, alerta_publico).
+      dispositivo:
+        description: Slug do dispositivo; deve ser igual ao campo `dispositivo` da mensagem.
+    messages:
+      telemetria:
+        $ref: "#/components/messages/telemetria"
+
+  evento:
+    address: "{inquilino}/{site}/{dominio}/{dispositivo}/evento"
+    description: Ocorrências pontuais (dispositivo → plataforma), ex.: confirmação de recebimento de alerta.
+    parameters: *parametros
+    messages:
+      evento:
+        $ref: "#/components/messages/evento"
+
+  estado:
+    address: "{inquilino}/{site}/{dominio}/{dispositivo}/estado"
+    description: Estado relatado do dispositivo (alimenta o gêmeo).
+    parameters: *parametros
+    messages:
+      estado:
+        $ref: "#/components/messages/estado"
+
+  comando:
+    address: "{inquilino}/{site}/{dominio}/{dispositivo}/comando"
+    description: Comandos da plataforma para o dispositivo.
+    parameters: *parametros
+    messages:
+      comando:
+        $ref: "#/components/messages/comando"
+
+operations:
+  publicarTelemetria:
+    action: receive
+    summary: A plataforma recebe telemetria dos dispositivos.
+    channel:
+      $ref: "#/channels/telemetria"
+  publicarEvento:
+    action: receive
+    summary: A plataforma recebe eventos dos dispositivos.
+    channel:
+      $ref: "#/channels/evento"
+  publicarEstado:
+    action: receive
+    summary: A plataforma recebe o estado relatado dos dispositivos.
+    channel:
+      $ref: "#/channels/estado"
+  enviarComando:
+    action: send
+    summary: A plataforma envia comandos aos dispositivos.
+    channel:
+      $ref: "#/channels/comando"
+
+components:
+  messages:
+    telemetria:
+      name: telemetria
+      title: Telemetria canônica
+      payload:
+        $ref: "./mensagem-canonica.v1.schema.json"
+      examples:
+        - name: estacao-rural
+          payload:
+            $ref: "./exemplos/telemetria-estacao.json"
+    evento:
+      name: evento
+      title: Evento canônico
+      payload:
+        $ref: "./mensagem-canonica.v1.schema.json"
+      examples:
+        - name: terminal-recebeu-alerta
+          payload:
+            $ref: "./exemplos/evento-terminal.json"
+    estado:
+      name: estado
+      title: Estado canônico
+      payload:
+        $ref: "./mensagem-canonica.v1.schema.json"
+      examples:
+        - name: terminal-com-alerta-pendente
+          payload:
+            $ref: "./exemplos/estado-terminal.json"
+    comando:
+      name: comando
+      title: Comando canônico
+      payload:
+        $ref: "./mensagem-canonica.v1.schema.json"
+      examples:
+        - name: exibir-alerta-no-terminal
+          payload:
+            $ref: "./exemplos/comando-terminal.json"

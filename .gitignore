@@ -13,3 +13,9 @@ __pycache__/
 # editor
 .vscode/
 .idea/
+
+# testes / lint
+.pytest_cache/
+.coverage
+.ruff_cache/
+*.egg-info/

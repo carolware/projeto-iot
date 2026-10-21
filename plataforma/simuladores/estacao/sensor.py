@@ -23,7 +23,6 @@ Zonas monitoradas (Goiás · Tocantins · Pará · Maranhão):
 
 import json
 import logging
-import math
 import os
 import random
 import time
@@ -34,13 +33,15 @@ import paho.mqtt.client as mqtt
 import requests
 from dotenv import load_dotenv
 
+from nucleo.geo import distancia_km
+
 load_dotenv()
 
 # ──────────────────────────────────────────────
 # Configurações gerais
 # ──────────────────────────────────────────────
 
-BROKER       = os.getenv("MQTT_BROKER", "broker.hivemq.com")
+BROKER       = os.getenv("MQTT_BROKER", "localhost")
 PORT         = int(os.getenv("MQTT_PORT", "1883"))
 CLIENT_ID    = f"sensor-sentinela-{uuid.uuid4().hex[:10]}"
 TOPIC_PREFIX = os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br")
@@ -261,25 +262,12 @@ def aplicar_mock_incendio(zona: str) -> None:
     estado[zona]["fumaca"]      = MOCK_FUMACA
 
 
-def _distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    raio_terra = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(dlon / 2) ** 2
-    )
-    return raio_terra * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
 def _coords_dentro_do_raio(zona: str, lat: float, lon: float) -> bool:
     """A coordenada customizada precisa cair dentro do raio de busca FIRMS
     da própria zona (o mesmo raio do círculo tracejado no mapa do front)."""
     lat_real, lon_real = ZONA_COORDS[zona]
     raio_km = FIRMS_RAIO * 111
-    return _distancia_km(lat_real, lon_real, lat, lon) <= raio_km
+    return distancia_km(lat_real, lon_real, lat, lon) <= raio_km
 
 
 def _forcar_refresh_real(zona: str) -> None:

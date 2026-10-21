@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinela-nucleo"
+version = "1.0.0"
+description = "Domínio compartilhado (central + borda) da plataforma IoT Sentinela"
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4.23"]
+
+[tool.setuptools]
+packages = ["nucleo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["nucleo", "central"]
+omit = ["central/migrations/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

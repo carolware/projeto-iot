@@ -1,0 +1,12 @@
+{
+  "versao": "1.0",
+  "id_mensagem": "2c4e6a8b-0d1f-4b3c-8e5a-7f9b1d3c5e7a",
+  "dispositivo": "terminal-dc-01",
+  "tipo": "estado",
+  "timestamp": "2026-10-19T05:10:30Z",
+  "dados": {
+    "online": true,
+    "alerta_pendente": true,
+    "ultimo_alarme_id": "9c1f7a2e-3b4d-4e5f-8a6b-7c8d9e0f1a2b"
+  }
+}
