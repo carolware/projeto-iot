@@ -18,11 +18,13 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 
+from opentelemetry import trace
 from prometheus_client import Counter, Gauge, Histogram
 
 from nucleo.ingestao import Entrada, PipelineIngestao, Resultado
 from nucleo.mensagem import agora_utc, parsear_timestamp
 
+TRACER = trace.get_tracer("central.ingestao")
 _LATENCIAS = (0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30, 60, 300, 3600, 86400)
 
 MENSAGENS = Counter("sentinela_mensagens_total", "Mensagens processadas pela ingestão", ["canal", "status"])
@@ -60,8 +62,11 @@ class PipelineMedido(PipelineIngestao):
     """O pipeline do nucleo, com contadores e latências (o domínio não conhece Prometheus)."""
 
     def processar_entradas(self, entradas: list[Entrada], autorizado=None) -> list[Resultado]:
-        inicio = time.perf_counter()
-        resultados = super().processar_entradas(entradas, autorizado)
+        # um span por chamada (mensagem HTTP, lote da borda ou micro-lote MQTT), não por mensagem (RF-OBS-03)
+        with TRACER.start_as_current_span("ingestao.pipeline") as span:
+            inicio = time.perf_counter()
+            resultados = super().processar_entradas(entradas, autorizado)
+            _anotar(span, entradas, resultados)
         if entradas:
             PIPELINE.labels(canal_de(entradas[0].origem)).observe(time.perf_counter() - inicio)
         agora = agora_utc()
@@ -73,6 +78,19 @@ class PipelineMedido(PipelineIngestao):
                 if medido:
                     LATENCIA_INGESTAO.labels(canal).observe(max(0.0, (agora - medido).total_seconds()))
         return resultados
+
+
+def _anotar(span, entradas: list[Entrada], resultados: list[Resultado]) -> None:
+    if not span.is_recording():
+        return
+    span.set_attribute("sentinela.canal", canal_de(entradas[0].origem) if entradas else "")
+    span.set_attribute("sentinela.mensagens", len(entradas))
+    for status in ("aceita", "duplicada", "recusada"):
+        span.set_attribute(f"sentinela.{status}s", sum(r.status == status for r in resultados))
+    # id_mensagem liga o trace aos logs; num lote grande, só os primeiros para não inflar o span
+    ids = [r.id_mensagem for r in resultados if r.id_mensagem][:20]
+    if ids:
+        span.set_attribute("sentinela.id_mensagem", ids)
 
 
 def _medido_em(bruto: object) -> datetime | None:

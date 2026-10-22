@@ -1,9 +1,13 @@
 """
 app.py — nó de borda (camada fog). Substitui o gateway da 1ª entrega.
 
-    estações ──MQTT local──► [validar → fila cifrada → regras locais] ──lotes HTTP──► central
-                                          │
+    estações ──MQTT local─┐
+                          ├► [validar → fila cifrada → regras locais] ──lotes HTTP──► central
+    aparelhos ──HTTP local┘               │
                                           └── comando local ao atuador (funciona sem link)
+
+O HTTP local (RF-EDG-01) e o painel local do técnico de campo (RF-EDG-07)
+ficam em borda/painel_local.py e funcionam sem link com a central.
 
 Os comandos da central para os dispositivos do campo chegam pela bridge do
 Mosquitto local (ver infra/mosquitto/borda-*.conf), que os guarda enquanto o
@@ -23,19 +27,24 @@ import os
 import threading
 import time
 import uuid
+from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
 import requests
 from dotenv import load_dotenv
+from opentelemetry import trace
 from prometheus_client import Counter, Gauge, start_http_server
 
 from borda.decisao_local import DecisorLocal
 from borda.fila import PRIORIDADE_ALARME, PRIORIDADE_ESTADO, PRIORIDADE_TELEMETRIA, FilaLocal
+from borda.painel_local import AcessoLocal, iniciar_servidor_local
 from borda.sincronizador import LinkIndisponivel, Sincronizador
 from nucleo.conexao_mqtt import configurar
 from nucleo.credenciais import gravar_se_mudou
 from nucleo.logs import configurar_logs
+from nucleo.rastreamento import configurar_rastreamento
 from nucleo.regras import Regra
 from nucleo.topicos import padrao_assinatura, parsear_topico
 from nucleo.validacao import validar_mensagem
@@ -57,7 +66,7 @@ ACESSO_DIR = Path(os.getenv("BORDA_ACESSO_DIR", "/acesso"))
 CHAVE = os.getenv("BORDA_CHAVE", "")
 ARQUIVO_FILA = os.getenv("BORDA_FILA", f"/dados/{BORDA_ID}.db")
 REGRAS = os.getenv("BORDA_REGRAS", str(Path(__file__).with_name("regras-padrao.json")))
-VERSAO = "0.2.0"
+VERSAO = "0.3.0"
 
 SYNC_INTERVALO_S = float(os.getenv("SYNC_INTERVALO_S", "1"))
 SYNC_BACKOFF_MAX_S = float(os.getenv("SYNC_BACKOFF_MAX_S", "30"))
@@ -68,11 +77,15 @@ REGRAS_SINCRONIZADAS = Path(os.getenv("BORDA_REGRAS_SINCRONIZADAS", str(Path(ARQ
 RETENCAO_ENVIADAS_S = float(os.getenv("RETENCAO_ENVIADAS_S", "3600"))
 ALERTA_COOLDOWN_SEG = float(os.getenv("ALERTA_COOLDOWN_SEG", "30"))
 METRICAS_PORTA = int(os.getenv("METRICAS_PORTA", "9100"))
+HTTP_PORTA = int(os.getenv("BORDA_HTTP_PORTA", "8080"))
+PAINEL_SENHA = os.getenv("BORDA_PAINEL_SENHA", "")
 
 PRIORIDADES = {"telemetria": PRIORIDADE_TELEMETRIA, "estado": PRIORIDADE_ESTADO, "evento": PRIORIDADE_ESTADO}
 
 configurar_logs(BORDA_ID)
+configurar_rastreamento(BORDA_ID)
 log = logging.getLogger("borda")
+TRACER = trace.get_tracer("borda")
 
 # ──────────────────────────────────────────────
 # Métricas (RF-OBS-01 / RF-EDG-06)
@@ -92,10 +105,24 @@ M_ULTIMO_SYNC = Gauge("borda_ultimo_sync_timestamp", "Epoch da última sincroniz
 # ──────────────────────────────────────────────
 
 
+class EstadoLink:
+    """O que o laço de sincronização sabe do link — lido pelo painel local."""
+
+    def __init__(self):
+        self.online: bool | None = None
+        self.ultimo_sync: float | None = None
+        self.ultimo_erro: str | None = None
+
+
 class NoBorda:
     def __init__(self, fila: FilaLocal, decisor: DecisorLocal):
         self.fila = fila
         self.decisor = decisor
+        self.link = EstadoLink()
+        # MQTT (thread do paho) e HTTP local (uma thread por requisição) passam pelo mesmo decisor
+        self._lock = threading.Lock()
+        self.ultimas_leituras: dict[str, dict] = {}
+        self.alarmes_recentes: deque[dict] = deque(maxlen=50)
         self.cliente = configurar(
             mqtt.Client(client_id=f"{BORDA_ID}-{uuid.uuid4().hex[:6]}", clean_session=True), BORDA_ID, CREDENCIAL
         )
@@ -117,32 +144,67 @@ class NoBorda:
     def _ao_receber(self, cliente, userdata, msg: mqtt.MQTTMessage) -> None:
         topico = parsear_topico(msg.topic)
         if topico is None or topico.site not in SITES:
-            self._recusar(msg, "tópico fora da convenção ou de site não atendido por este nó")
+            self._recusar(
+                f"mqtt:{msg.topic}", msg.payload, "tópico fora da convenção ou de site não atendido por este nó"
+            )
             return
         try:
             bruto = json.loads(msg.payload)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            self._recusar(msg, "payload não é JSON")
+            self._recusar(f"mqtt:{msg.topic}", msg.payload, "payload não é JSON")
             return
+        self.processar(bruto, topico, cliente, f"mqtt:{msg.topic}", msg.payload)
+
+    def processar(self, bruto, topico, cliente, origem: str, payload: bytes) -> tuple[str, list[str]]:
+        """
+        Pipeline local comum ao MQTT e ao HTTP: validar → fila → regras locais.
+        Devolve (status, erros) com status ∈ aceita | duplicada | recusada.
+        """
+        with TRACER.start_as_current_span("borda.receber") as span:
+            span.set_attribute("sentinela.origem", origem.split(":", 1)[0])
+            if isinstance(bruto, dict):
+                span.set_attribute("sentinela.id_mensagem", str(bruto.get("id_mensagem")))
+                span.set_attribute("sentinela.dispositivo", str(bruto.get("dispositivo")))
+            status, erros = self._processar(bruto, topico, cliente, origem, payload)
+            span.set_attribute("sentinela.status", status)
+            return status, erros
+
+    def _processar(self, bruto, topico, cliente, origem: str, payload: bytes) -> tuple[str, list[str]]:
         erros = validar_mensagem(bruto, topico)
         if erros:
-            self._recusar(msg, "; ".join(str(e) for e in erros))
-            return
+            motivos = [str(e) for e in erros]
+            self._recusar(origem, payload, "; ".join(motivos))
+            return "recusada", motivos
 
         bruto["via"] = BORDA_ID
         M_RECEBIDAS.labels(bruto["tipo"]).inc()
         correlacao = {"id_mensagem": bruto["id_mensagem"], "dispositivo": bruto["dispositivo"], "tipo": bruto["tipo"]}
-        if not self.fila.enfileirar(bruto, PRIORIDADES[bruto["tipo"]]):
-            log.debug("reenvio ignorado (já na fila)", extra=correlacao)
-            return
-        log.debug("mensagem enfileirada", extra=correlacao)
-
-        decisao = self.decisor.avaliar(bruto, topico)
+        with self._lock:
+            if not self.fila.enfileirar(bruto, PRIORIDADES[bruto["tipo"]]):
+                log.debug("reenvio ignorado (já na fila)", extra=correlacao)
+                return "duplicada", []
+            log.debug("mensagem enfileirada", extra=correlacao)
+            if bruto["tipo"] == "telemetria":
+                self.ultimas_leituras[bruto["dispositivo"]] = {
+                    "site": topico.site,
+                    "timestamp": bruto["timestamp"],
+                    "medidas": bruto.get("medidas", []),
+                }
+            decisao = self.decisor.avaliar(bruto, topico)
         if decisao:
             for topico_cmd, comando in decisao.comandos:
                 cliente.publish(topico_cmd, json.dumps(comando, ensure_ascii=False), qos=1)
             self.fila.enfileirar(decisao.alarme, PRIORIDADE_ALARME)
             M_ALARMES.labels(decisao.regra.severidade).inc()
+            self.alarmes_recentes.appendleft(
+                {
+                    "quando": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "site": topico.site,
+                    "severidade": decisao.regra.severidade,
+                    "regra": decisao.regra.nome,
+                    "comandos": [c["dados"]["acao"] for _, c in decisao.comandos],
+                }
+            )
             log.warning(
                 "ALARME LOCAL %s em %s (%s) → %s",
                 decisao.regra.severidade.upper(),
@@ -155,11 +217,12 @@ class NoBorda:
                     "comandos": [c["id_mensagem"] for _, c in decisao.comandos],
                 },
             )
+        return "aceita", []
 
-    def _recusar(self, msg: mqtt.MQTTMessage, motivo: str) -> None:
+    def _recusar(self, origem: str, payload: bytes, motivo: str) -> None:
         M_INVALIDAS.inc()
-        self.fila.registrar_invalida(f"mqtt:{msg.topic}", msg.payload, motivo)
-        log.warning("mensagem recusada na borda: %s", motivo, extra={"topico": msg.topic})
+        self.fila.registrar_invalida(origem, payload, motivo)
+        log.warning("mensagem recusada na borda: %s", motivo, extra={"origem": origem})
 
 
 # ──────────────────────────────────────────────
@@ -168,6 +231,13 @@ class NoBorda:
 
 
 def enviar_lote(mensagens: list[dict]) -> dict:
+    # o POST abaixo leva o `traceparent` (requests instrumentado): a central continua este trace
+    with TRACER.start_as_current_span("borda.sincronizar_lote") as span:
+        span.set_attribute("sentinela.mensagens", len(mensagens))
+        return _enviar_lote(mensagens)
+
+
+def _enviar_lote(mensagens: list[dict]) -> dict:
     try:
         resposta = requests.post(
             f"{CENTRAL_URL}/api/v1/ingestao/lote",
@@ -235,8 +305,13 @@ def atualizar_acesso() -> None:
 
 
 def laco_sincronizacao(
-    fila: FilaLocal, sincronizador: Sincronizador, parar: threading.Event, decisor: DecisorLocal | None = None
+    fila: FilaLocal,
+    sincronizador: Sincronizador,
+    parar: threading.Event,
+    decisor: DecisorLocal | None = None,
+    link: EstadoLink | None = None,
 ) -> None:
+    link = link or EstadoLink()
     espera = SYNC_INTERVALO_S
     ultimo_estado = ultimas_regras = 0.0
     online = None
@@ -259,12 +334,14 @@ def laco_sincronizacao(
                 nivel = logging.INFO if enviados >= LOTE_MAX or online is False else logging.DEBUG
                 log.log(nivel, "Sincronizadas %d mensagem(ns) com a central", enviados)
             online, espera = True, SYNC_INTERVALO_S
+            link.online, link.ultimo_sync, link.ultimo_erro = True, time.time(), None
             M_LINK.set(1)
             M_ULTIMO_SYNC.set(time.time())
         except LinkIndisponivel as exc:
             if online is not False:
                 log.warning("Central inacessível (%s) — guardando na fila local", exc)
             online, espera = False, min(SYNC_BACKOFF_MAX_S, max(SYNC_INTERVALO_S, espera * 2))
+            link.online, link.ultimo_erro = False, str(exc)
             M_LINK.set(0)
         M_PENDENTES.set(fila.contagem()["pendente"])
 
@@ -300,13 +377,16 @@ def main() -> None:
         log.warning("Sem link na partida (%s): usando as credenciais locais já salvas", exc)
     no = NoBorda(fila, decisor)
     no.iniciar()
+    identificacao = {"borda": BORDA_ID, "versao": VERSAO, "sites": sorted(SITES)}
+    servidor = iniciar_servidor_local(no, AcessoLocal(ACESSO_DIR), PAINEL_SENHA, HTTP_PORTA, identificacao)
     parar = threading.Event()
     try:
-        laco_sincronizacao(fila, Sincronizador(fila, enviar_lote, LOTE_MAX), parar, decisor)
+        laco_sincronizacao(fila, Sincronizador(fila, enviar_lote, LOTE_MAX), parar, decisor, no.link)
     except KeyboardInterrupt:
         log.info("Encerrando nó de borda…")
     finally:
         parar.set()
+        servidor.shutdown()
         no.cliente.loop_stop()
         fila.fechar()
 

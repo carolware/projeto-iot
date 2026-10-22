@@ -65,6 +65,8 @@ docker compose up -d --build
 | http://localhost:8000/contratos/asyncapi.yaml | contrato MQTT |
 | http://localhost:8080 | Keycloak (realm `sentinela`) |
 | http://localhost:9090 | Prometheus (métricas e alertas operacionais) |
+| http://localhost:16686 | Jaeger (traces distribuídos, OpenTelemetry) |
+| http://localhost:8081 / :8082 | painel local das bordas Tocantins / Goiás (senha `BORDA_PAINEL_SENHA`) |
 | `localhost:8883` / `8884` / `8885` | MQTT/TLS: central, borda Tocantins e borda Goiás |
 
 Usuários de demonstração, senha `sentinela` (**só desenvolvimento**):
@@ -89,7 +91,7 @@ python plataforma/simuladores/mock_incendio.py on pirenopolis    # e "off" para 
 | [Fluxos](docs/fluxos.md) | sequências: incêndio → prefeitura, zona sem borda, desconexão, regras na borda, comandos |
 | [Modelo de dados](docs/dados.md) | MER, hypertables, decisões do banco, fila da borda |
 | [MQTT, acesso e segurança](docs/mqtt-e-seguranca.md) | árvore de tópicos, ACL, credenciais, TLS, Keycloak e papéis, LGPD |
-| [Decisões de arquitetura (ADRs)](docs/adr/) | 11 decisões com contexto, alternativas e consequências |
+| [Decisões de arquitetura (ADRs)](docs/adr/) | 12 decisões com contexto, alternativas e consequências |
 | [Kit do integrador](docs/integrador/) | guia, coleção de requisições e exemplos em Python, TypeScript e Go |
 | [Matriz de rastreabilidade](docs/rastreabilidade.md) | cada requisito do PDF → onde foi atendido → evidência |
 | [Roteiro de demonstração](docs/demonstracao.md) | passo a passo dos critérios de aceite (§9.3) |
@@ -99,9 +101,9 @@ python plataforma/simuladores/mock_incendio.py on pirenopolis    # e "off" para 
 
 ## Situação da entrega
 
-- **Essenciais:** 32 de 33 atendidos. A exceção é a ingestão HTTP local no nó de
-  borda (RF-EDG-01), que só aceita MQTT: o desenho prevê o HTTP, mas ele não foi
-  implementado.
+- **Essenciais:** 33 de 33 atendidos. O nó de borda aceita MQTT e HTTP locais
+  (RF-EDG-01) e tem painel local para o técnico de campo (RF-EDG-07,
+  http://localhost:8081 e :8082).
 - **Critérios de aceite da §9.3:**
   - urbano e rural integrados, com borda;
   - desconexão de 72 h sem perda nem duplicata;
@@ -125,7 +127,7 @@ O detalhamento, incluindo o que ficou fora e por quê, está na
 | Dados | PostgreSQL 16 + TimescaleDB (hypertables, agregado contínuo) |
 | Identidade | Keycloak 26 (OIDC, PKCE, papéis, TOTP) |
 | Painel | React 19, TanStack Start/Router, react-query, Leaflet, keycloak-js |
-| Observabilidade | logs JSON com correlação, Prometheus |
+| Observabilidade | logs JSON com correlação, Prometheus, OpenTelemetry + Jaeger |
 | Contratos | JSON Schema 2020-12, AsyncAPI 3, OpenAPI 3 |
 | Implantação e CI | Docker Compose, GitHub Actions (ruff, pytest, build, Go, front) |
 

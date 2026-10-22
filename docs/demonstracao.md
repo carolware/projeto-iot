@@ -86,6 +86,9 @@ Mostrar:
 - a borda de Tocantins continua decidindo: `ALARME LOCAL CRITICO em
   lagoa-da-confusao` e o atuador local é acionado, **sem a central**;
 - a fila cifrada crescendo (`borda_fila_pendente`) e `borda_link_central_online 0`;
+- o **painel local** da borda (http://localhost:8081, usuário qualquer, senha
+  `BORDA_PAINEL_SENHA`): "SEM LINK", fila pendente e o alarme local, tudo sem a
+  central (RF-EDG-07);
 - na tela **Bordas** do painel, "sem sincronizar há …" aumentando; no Prometheus,
   o alerta `BordaSemSincronizar` depois de ~1 min.
 
@@ -159,7 +162,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PATCH localhost:8000/api/v1/regras/r
 - ACL: o broker só deixa cada dispositivo publicar nos próprios tópicos
   (`plataforma/central/acesso_mqtt.py`); todo MQTT é TLS com a CA própria.
 
-## 9. Observabilidade (RF-OBS-01, 02, 05)
+## 9. Observabilidade (RF-OBS-01, 02, 03, 05)
 
 ```bash
 # um alarme seguido da borda até a central pelo id_mensagem
@@ -170,6 +173,11 @@ docker compose logs borda-goias central-ingestao central | grep "$ID"
 No Prometheus (http://localhost:9090): `rate(sentinela_mensagens_total[1m])`,
 `histogram_quantile(0.95, sum by (le) (rate(sentinela_ingestao_latencia_segundos_bucket[5m])))`
 e a página **Alerts** com as 7 regras operacionais.
+
+No Jaeger (http://localhost:16686): serviço `borda-goias`, operação
+`borda.sincronizar_lote` → um trace que atravessa a borda, a rota
+`POST /api/v1/ingestao/lote` da central, o `ingestao.pipeline` e as consultas
+SQL. O `trace_id` de qualquer linha de log da central abre o mesmo trace.
 
 ## 10. Teste de carga (RNF-01, RNF-02)
 

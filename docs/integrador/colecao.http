@@ -34,7 +34,8 @@ Content-Type: application/json
   "perfil": "estacao-incendio",
   "site": "mirador",
   "fabricante": "Equipe X",
-  "firmware": "0.1.0"
+  "firmware": "0.1.0",
+  "tags": ["grupo:testes"]
 }
 
 ###
@@ -75,6 +76,15 @@ Authorization: Bearer {{token}}
 ### 8. Histórico da última hora
 GET {{api}}/api/v1/dispositivos/{{slug}}/telemetria?grandeza=temperatura&tamanho=20
 Authorization: Bearer {{token}}
+
+### 8b. Cadastro em lote (CSV) — relatório por linha; credenciais aparecem só aqui
+POST {{api}}/api/v1/dispositivos/lote
+Authorization: Bearer {{token}}
+Content-Type: text/csv
+
+slug,nome,tipo,dominio,perfil,site,area,fabricante,firmware,tags
+lote-teste-01,Lote 1,estacao,incendio,estacao-incendio,mirador,,Equipe X,0.1.0,grupo:testes
+lote-teste-02,Lote 2,estacao,incendio,estacao-incendio,mirador,,Equipe X,0.1.0,grupo:testes;bioma:cerrado
 
 ### 9. Gerar outra credencial (a anterior deixa de valer) ou revogar
 POST {{api}}/api/v1/dispositivos/{{slug}}/credencial

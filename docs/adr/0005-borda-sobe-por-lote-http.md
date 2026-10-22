@@ -22,6 +22,7 @@ da medição (RF-EDG-02), com alarmes antes da telemetria (RF-EDG-05).
 - Confirmação ponta a ponta, com o motivo de cada recusa (vai para a DLQ da
   borda).
 - A central deduplica pelo `id_mensagem`: reenviar um lote inteiro é seguro.
-- Não implementado: compressão do corpo do lote (RNF-05) e o endpoint HTTP local
-  na borda (RF-EDG-01, só MQTT local). Ambos registrados na
-  [rastreabilidade](../rastreabilidade.md).
+- Não implementado: compressão do corpo do lote (RNF-05), registrada na
+  [rastreabilidade](../rastreabilidade.md). A ingestão HTTP local na borda
+  (RF-EDG-01) foi feita depois: entra na mesma fila que o MQTT e sobe pelos
+  mesmos lotes.

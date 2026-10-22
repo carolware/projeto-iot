@@ -16,3 +16,4 @@ documento de requisitos). Status de todas: **aceita** (2026-10).
 | [0009](0009-ingestao-mqtt-separada.md) | Ingestão MQTT em serviço separado da API |
 | [0010](0010-assinaturas-entre-inquilinos.md) | Cenário urbano por assinaturas de alerta entre inquilinos |
 | [0011](0011-simulacao-em-vez-de-hardware.md) | Dispositivos simulados em vez de hardware |
+| [0012](0012-opentelemetry-e-jaeger.md) | OpenTelemetry com Jaeger para traces distribuídos |

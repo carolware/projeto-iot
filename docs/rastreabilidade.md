@@ -13,9 +13,9 @@ Legenda: ✅ atendido · 🟡 parcial · ⬜ fora do escopo desta entrega
 
 | Prioridade | Total | ✅ | 🟡 | ⬜ |
 |---|---|---|---|---|
-| Essencial | 33 | 32 | 1 | 0 |
-| Importante | 30 | 10 | 9 | 11 |
-| Desejável | 6 | 0 | 0 | 6 |
+| Essencial | 33 | 33 | 0 | 0 |
+| Importante | 30 | 13 | 9 | 8 |
+| Desejável | 6 | 1 | 0 | 5 |
 | Não funcionais | 18 | 7 | 9 | 2 |
 
 ## 5.1 Cenários e catálogo
@@ -48,13 +48,13 @@ Legenda: ✅ atendido · 🟡 parcial · ⬜ fora do escopo desta entrega
 
 | Req. | Prior. | Status | Onde | Evidência |
 |---|---|---|---|---|
-| RF-EDG-01 nó de borda com ingestão local (MQTT e HTTP) e fila persistente | Essencial | 🟡 | `borda/` + Mosquitto local + `borda/fila.py` | `test_desconexao_nao_perde_nem_duplica` (72 h), `test_fila_sobrevive_a_reinicio`. **Ingestão HTTP local não implementada** (só MQTT); prototipada no desenho, decisão da equipe |
+| RF-EDG-01 nó de borda com ingestão local (MQTT e HTTP) e fila persistente | Essencial | ✅ | `borda/` + Mosquitto local + `borda/fila.py`; HTTP local `POST :8081/api/v1/ingestao` (`borda/painel_local.py`), credencial do dispositivo conferida contra as senhas/ACL locais | `test_desconexao_nao_perde_nem_duplica` (72 h), `test_fila_sobrevive_a_reinicio`, `test_ingestao_http_local_entra_na_mesma_fila_que_o_mqtt`, `test_ingestao_http_local_recusa` |
 | RF-EDG-02 sincronizar em lotes sem perdas nem duplicatas | Essencial | ✅ | `borda/sincronizador.py` | `test_resposta_perdida_reenvia_e_a_central_deduplica`; demonstração passo 5 |
 | RF-EDG-03 regras locais sem a central | Importante | ✅ | `borda/decisao_local.py` (motor do `nucleo`) | `test_risco_critico_aciona_a_brigada_localmente`; demonstração passo 4 |
 | RF-EDG-04 receber regras e configurações | Importante | ✅ | `GET /bordas/{slug}/regras` e `/acesso` | `test_borda_baixa_e_guarda_as_regras_da_central`, `test_sem_link_as_regras_ficam_como_estao` |
 | RF-EDG-05 alarmes antes da telemetria | Importante | ✅ | prioridade na fila | `test_alarme_sai_antes_da_telemetria_atrasada` |
 | RF-EDG-06 gestão remota (estado, versão, fila) | Importante | 🟡 | `PUT /bordas/{slug}/estado`; tela **Bordas**; métricas | `test_borda_informa_estado_e_painel_mostra_tempo_sem_sincronizar`. Falta: espaço livre em disco |
-| RF-EDG-07 painel local da borda | Desejável | ⬜ | — | — |
+| RF-EDG-07 painel local da borda | Desejável | ✅ | `GET :8081/` (HTML) e `/estado` (JSON): últimas leituras, alarmes locais, fila, link e regras; senha local `BORDA_PAINEL_SENHA` | `test_painel_local_mostra_leituras_alarmes_fila_e_link`, `test_painel_local_fica_desligado_sem_senha` |
 
 ## 5.4 Gestão de dispositivos
 
@@ -62,11 +62,11 @@ Legenda: ✅ atendido · 🟡 parcial · ⬜ fora do escopo desta entrega
 |---|---|---|---|---|
 | RF-DIS-01 cadastro com perfil, domínio, local, área, fabricante, firmware | Essencial | ✅ | `POST /dispositivos`; tela **Cadastro** | `test_cadastro_duplicado_e_referencia_invalida`, `test_integrador_cadastra_dispositivo_mas_nao_regra` |
 | RF-DIS-02 credencial única e revogável (central e borda) | Essencial | ✅ | `central/acesso_mqtt.py`, `nucleo/credenciais.py` | `test_credencial_emitida_uma_vez_renovada_e_revogada`, `test_revogado_sai_do_arquivo_do_broker`, `test_acesso_do_broker_da_borda` |
-| RF-DIS-03 provisionamento em lote (CSV) | Importante | ⬜ | — | cadastro é unitário |
+| RF-DIS-03 provisionamento em lote (CSV) | Importante | ✅ | `POST /dispositivos/lote` (corpo `text/csv`, relatório por linha, credenciais devolvidas uma vez, ACL regerada uma vez por lote) | `test_cadastro_em_lote_por_csv_com_relatorio_por_linha` (1.000 linhas + 3 inválidas, ~7 s), `test_lote_com_cabecalho_errado_e_recusado_inteiro` |
 | RF-DIS-04 gêmeo (desejado, relatado, diferença) | Importante | ✅ | tabela `gemeo`; `/dispositivos/{slug}/gemeo` | `test_gemeo_desejado_relatado_e_diferenca` |
 | RF-DIS-05 comandos com resposta associada | Importante | ✅ | `POST /dispositivos/{slug}/comandos`; tabela `comando` | `test_comando_pelo_painel_e_resposta`, `test_resposta_do_atuador_confirma_o_comando` |
 | RF-DIS-06 online/offline pelo intervalo do perfil | Essencial | ✅ | `intervalo_esperado_s` | `test_online_offline_respeita_o_intervalo_do_perfil` |
-| RF-DIS-07 grupos e tags | Importante | ⬜ | — | — |
+| RF-DIS-07 grupos e tags | Importante | ✅ | coluna `dispositivo.tags` (índice GIN); `GET /dispositivos?tag=` (todas as tags pedidas); grupo = tag `grupo:xxx` | `test_tags_e_grupos_filtram_a_frota` |
 | RF-DIS-08 OTA em ondas | Desejável | ⬜ | — | — |
 
 ## 5.5 Integração
@@ -133,7 +133,7 @@ Legenda: ✅ atendido · 🟡 parcial · ⬜ fora do escopo desta entrega
 |---|---|---|---|---|
 | RF-OBS-01 métricas Prometheus por módulo | Essencial | ✅ | `central/metricas.py`; métricas das bordas | `test_metricas_prometheus`; Prometheus em `:9090` |
 | RF-OBS-02 logs JSON com correlação da borda à central | Essencial | ✅ | `nucleo/logs.py` (`id_mensagem`) | `test_logs_json_com_correlacao`; demonstração passo 9 |
-| RF-OBS-03 OpenTelemetry | Importante | ⬜ | — | correlação feita por `id_mensagem` nos logs |
+| RF-OBS-03 OpenTelemetry | Importante | ✅ | `nucleo/rastreamento.py`; Jaeger em `:16686`; `traceparent` no lote borda→central; `trace_id` nos logs ([ADR 0012](adr/0012-opentelemetry-e-jaeger.md)) | `test_lote_da_borda_continua_o_trace_na_central`, `test_borda_envia_traceparent_no_lote`, `test_log_dentro_de_um_span_leva_o_trace_id`. MQTT 3.1.1 sem cabeçalho: o trace começa na ingestão |
 | RF-OBS-04 saúde por integração e por borda | Importante | 🟡 | tela **Bordas**; alvos do Prometheus | por borda sim; por integração só via Prometheus |
 | RF-OBS-05 alertas operacionais | Importante | 🟡 | `infra/prometheus/alertas.yml` (7 regras) | visíveis em `:9090/alerts`; sem envio ao administrador (Alertmanager) |
 
