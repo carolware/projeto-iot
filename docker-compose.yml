@@ -22,6 +22,10 @@ x-ambiente: &ambiente
   MQTT_PORT: "8883"
   MQTT_CA: /pki/ca.crt
   LOG_FORMATO: json
+  # rastreamento (RF-OBS-03): central, ingestão e bordas exportam para o Jaeger; vazio = desligado
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT-http://jaeger:4318}
+  OTEL_TRACES_SAMPLER: parentbased_traceidratio
+  OTEL_TRACES_SAMPLER_ARG: ${OTEL_AMOSTRAGEM:-1.0}
 
 x-mosquitto: &mosquitto
   image: eclipse-mosquitto:2.0.20
@@ -191,7 +195,9 @@ services:
       BORDA_ACESSO_DIR: /acesso
       MQTT_BROKER: mosquitto-borda-tocantins
       CENTRAL_URL: http://central:8000
+      BORDA_PAINEL_SENHA: ${BORDA_PAINEL_SENHA:-}   # vazio = painel local desligado
     ports:
+      - "8081:8080"   # HTTP local: ingestão (RF-EDG-01) e painel do técnico (RF-EDG-07)
       - "9101:9100"   # métricas Prometheus
     volumes:
       - borda-tocantins-dados:/dados
@@ -227,7 +233,9 @@ services:
       BORDA_ACESSO_DIR: /acesso
       MQTT_BROKER: mosquitto-borda-goias
       CENTRAL_URL: http://central:8000
+      BORDA_PAINEL_SENHA: ${BORDA_PAINEL_SENHA:-}   # vazio = painel local desligado
     ports:
+      - "8082:8080"   # HTTP local: ingestão (RF-EDG-01) e painel do técnico (RF-EDG-07)
       - "9102:9100"
     volumes:
       - borda-goias-dados:/dados
@@ -350,6 +358,17 @@ services:
       - ./plataforma/infra/prometheus:/etc/prometheus:ro
       - prometheus-dados:/prometheus
     depends_on: [central]
+    networks: [nuvem, campo-tocantins, campo-goias]
+    restart: unless-stopped
+
+  # traces distribuídos (RF-OBS-03): UI em http://localhost:16686; recebe OTLP/HTTP na 4318.
+  # Nas redes de campo pelo mesmo motivo do Prometheus: a borda continua exportando sem o link.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
     networks: [nuvem, campo-tocantins, campo-goias]
     restart: unless-stopped
 

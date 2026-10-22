@@ -36,7 +36,9 @@ a API. O `pki` gera a CA e os certificados na primeira execução, em
 | `mosquitto-central` | 8883 | broker MQTT/TLS da central |
 | `mosquitto-borda-tocantins` / `-goias` | 8884 / 8885 | brokers locais das bordas |
 | `borda-tocantins` / `borda-goias` | 9101 / 9102 | nós de borda, `/metrics` |
+| `borda-tocantins` / `borda-goias` | 8081 / 8082 | HTTP local da borda: `POST /api/v1/ingestao` e painel do técnico (`/`, `/estado`; senha `BORDA_PAINEL_SENHA`) |
 | `prometheus` | 9090 | métricas e alertas operacionais |
+| `jaeger` | 16686 | traces distribuídos (OpenTelemetry) |
 | `estacoes-tocantins`, `estacoes-goias`, `estacoes-diretas` | — | estações simuladas |
 | `atuadores-tocantins`, `atuadores-goias`, `atuadores-diretos` | — | atuadores da brigada |
 | `conector-firms` | — | adaptador NASA FIRMS |

@@ -31,9 +31,11 @@ from central.tempo_real import HubTempoReal
 from nucleo.credenciais import hash_senha
 from nucleo.ingestao import BarramentoComposto
 from nucleo.logs import configurar_logs
+from nucleo.rastreamento import configurar_rastreamento, instrumentar_fastapi
 from nucleo.validacao import SCHEMA_V1, diretorio_contratos
 
 configurar_logs("central")
+configurar_rastreamento("central")
 INSTANCIA = "api"  # marca, no barramento, o que esta instância ingeriu (lote HTTP, ingestão embutida)
 
 
@@ -155,6 +157,7 @@ def criar_app(
     def saude():
         return {"status": "ok"}
 
+    instrumentar_fastapi(app)  # RF-OBS-03; continua o trace do `traceparent` recebido (ex.: lote da borda)
     return app
 
 

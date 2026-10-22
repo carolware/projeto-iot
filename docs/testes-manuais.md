@@ -62,6 +62,7 @@ tk() { curl -s localhost:8080/realms/sentinela/protocol/openid-connect/token \
 | [ ] | `python plataforma/simuladores/mock_incendio.py on lagoa-da-confusao` | a borda de Tocantins continua acionando o atuador local (logs `ALARME LOCAL`) |
 | [ ] | `curl -s localhost:9101/metrics \| grep -E '^borda_(fila_pendente\|link_central_online)'` | `borda_link_central_online 0` e a fila crescendo |
 | [ ] | aba **Bordas** e http://localhost:9090/alerts | "sem sincronizar" aumentando; alerta `BordaSemSincronizar` depois de ~1 min |
+| [ ] | http://localhost:8081 (senha `BORDA_PAINEL_SENHA` do `.env`) | painel local mostra **SEM LINK**, fila pendente subindo e o alarme local de Lagoa da Confusão |
 | [ ] | `sh plataforma/simuladores/demo/link.sh on tocantins` | fila volta a 0 em segundos |
 | [ ] | aba Alarmes (filtro Lagoa da Confusão) | alarme crítico com **origem borda** e o horário de quando o link estava fora |
 | [ ] | `python plataforma/simuladores/mock_incendio.py off` | alarme resolvido |
@@ -118,6 +119,7 @@ tk() { curl -s localhost:8080/realms/sentinela/protocol/openid-connect/token \
 | [ ] | `docker compose logs --no-log-prefix borda-goias \| grep 'ALARME LOCAL' \| tail -1 \| jq -r .id_mensagem`, depois `grep` desse id em `docker compose logs borda-goias central` | o mesmo `id_mensagem` na borda e na central |
 | [ ] | Prometheus: `rate(sentinela_mensagens_total[1m])` | vazão por canal (`mqtt`, `lote`) |
 | [ ] | Prometheus → Alerts | 7 regras operacionais listadas |
+| [ ] | Jaeger (http://localhost:16686), serviço `borda-goias`, operação `borda.sincronizar_lote` | trace com spans da borda **e** da central (`ingestao.pipeline`, `SELECT`/`INSERT`) |
 
 ## 12. Carga (opcional, ~2 min)
 

@@ -9,6 +9,7 @@ migrations Alembic em `plataforma/central/migrations/versions/`:
 | `0001_mer_inicial` | catálogo, dispositivos, mensagens, séries, gêmeo, comandos, FIRMS, DLQ, auditoria, agregado `telemetria_1h` |
 | `0002_regras_alarmes` | regras, ações, alarmes, execuções de ações, assinaturas de alerta |
 | `0003_bordas_sites` | sites atendidos por cada nó de borda |
+| `0004_tags_dispositivo` | tags e grupos de dispositivos (`text[]` com índice GIN) |
 
 O MER foi derivado dos JSONs que já circulavam na 1ª entrega (leitura do sensor,
 resultado FIRMS, alerta do gateway, comando do painel e lista de zonas).
@@ -86,6 +87,7 @@ erDiagram
     text tipo "estacao | atuador | terminal | conector"
     text fabricante
     text firmware
+    text_array tags "grupo = tag grupo:xxx"
     text credencial_hash
     timestamptz revogado_em
     timestamptz ultimo_contato_em }

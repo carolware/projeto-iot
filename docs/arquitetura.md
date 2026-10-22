@@ -67,7 +67,7 @@ flowchart TB
 | Camada | Componentes | Requisitos principais |
 |---|---|---|
 | Dispositivos | `estacoes-*`, `atuadores-*`, `terminais` (Go), `conector-firms` | RF-INT-02, RF-INT-04, RF-DIS-05 |
-| Borda | `borda-*` + `mosquitto-borda-*` | RF-EDG-01..06, RF-SEG-05 |
+| Borda | `borda-*` + `mosquitto-borda-*` | RF-EDG-01..07, RF-SEG-05 |
 | Ingestão | `mosquitto-central`, `central-ingestao`, `POST /ingestao` e `/ingestao/lote` | RF-ING-01..04, 06, 08 |
 | Dados | `postgres` (TimescaleDB) | RF-DAD-01, 02, 06; RF-PRO-04 |
 | Processamento | motor de regras, ações, assinaturas (dentro de `central`) | RF-PRO-01..05 |
@@ -148,12 +148,12 @@ flowchart TB
   end
   subgraph TO["rede campo-tocantins"]
     mqt["mosquitto-borda-tocantins :8884"]
-    bt["borda-tocantins :9101"]
+    bt["borda-tocantins :8081 :9101"]
     et["estacoes-tocantins<br/>atuadores-tocantins"]
   end
   subgraph GO["rede campo-goias"]
     mqg["mosquitto-borda-goias :8885"]
-    bg["borda-goias :9102"]
+    bg["borda-goias :8082 :9102"]
     eg["estacoes-goias<br/>atuadores-goias"]
   end
   et --> mqt --> bt
@@ -179,9 +179,10 @@ flowchart TB
 ```
 
 Portas publicadas na máquina: 3000 (painel), 8000 (API e Swagger em `/docs`),
-8080 (Keycloak), 8883/8884/8885 (MQTT/TLS central, borda TO, borda GO),
+8080 (Keycloak), 8081/8082 (HTTP local e painel das bordas TO e GO),
+8883/8884/8885 (MQTT/TLS central, borda TO, borda GO),
 9090 (Prometheus), 9101/9102 (métricas das bordas), 9103 (métricas da
-ingestão) e 5433 (Postgres).
+ingestão), 16686 (Jaeger) e 5433 (Postgres).
 
 ## 4. Arquitetura hexagonal de cada serviço
 

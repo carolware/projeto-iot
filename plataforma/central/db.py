@@ -23,12 +23,16 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
+from nucleo.rastreamento import instrumentar_engine
+
 metadata = MetaData()
 _JSON = JSON().with_variant(JSONB(), "postgresql")
 
 
 def criar_engine(url: str) -> Engine:
-    return create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=10)
+    engine = create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=10)
+    instrumentar_engine(engine)  # spans das consultas SQL (RF-OBS-03), se o rastreamento estiver ligado
+    return engine
 
 
 inquilino = Table(
@@ -122,6 +126,7 @@ dispositivo = Table(
     Column("tipo", Text),
     Column("fabricante", Text),
     Column("firmware", Text),
+    Column("tags", ARRAY(Text)),
     Column("credencial_hash", Text),
     Column("revogado_em", DateTime(timezone=True)),
     Column("ultimo_contato_em", DateTime(timezone=True)),

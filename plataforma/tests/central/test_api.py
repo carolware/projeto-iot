@@ -268,6 +268,69 @@ def test_cadastro_duplicado_e_referencia_invalida(cliente):
     assert cliente.get("/api/v1/dispositivos", headers=ADMIN | {"X-Inquilino": "nao-existe"}).status_code == 404
 
 
+def test_tags_e_grupos_filtram_a_frota(cliente):
+    """RF-DIS-07: filtrar por tag/grupo devolve só os dispositivos que têm todas as tags pedidas."""
+    for slug, tags in (
+        ("est-mateiros-01", ["grupo:jalapao", "bioma:cerrado", "grupo:jalapao"]),
+        ("est-pirenopolis-01", ["bioma:cerrado"]),
+    ):
+        resposta = cliente.patch(f"/api/v1/dispositivos/{slug}", json={"tags": tags}, headers=BRIGADA)
+        assert resposta.status_code == 200 and resposta.json()["tags"] == sorted(set(tags))
+
+    def filtrar(*tags):
+        corpo = cliente.get("/api/v1/dispositivos", params={"tag": list(tags)}, headers=BRIGADA).json()
+        return {d["slug"] for d in corpo["itens"]}
+
+    assert filtrar("bioma:cerrado") == {"est-mateiros-01", "est-pirenopolis-01"}
+    assert filtrar("bioma:cerrado", "grupo:jalapao") == {"est-mateiros-01"}
+    assert filtrar("grupo:inexistente") == set()
+    assert cliente.get("/api/v1/dispositivos", params={"tag": "bioma:cerrado"}, headers=ANAPOLIS).json()["total"] == 0
+    invalida = cliente.patch("/api/v1/dispositivos/est-mateiros-01", json={"tags": ["Com Espaço"]}, headers=BRIGADA)
+    assert invalida.status_code == 422
+
+
+def test_cadastro_em_lote_por_csv_com_relatorio_por_linha(cliente, banco, monkeypatch):
+    """RF-DIS-03: 1.000 dispositivos por CSV; as linhas inválidas voltam no relatório sem barrar as demais."""
+    chamadas = []
+    monkeypatch.setattr(cliente.app.state.acesso, "atualizar", lambda: chamadas.append(1))
+    cabecalho = "slug,nome,tipo,dominio,perfil,site,area,fabricante,firmware,tags"
+    validas = [
+        f"lote-{i:04d},Estação {i},estacao,incendio,estacao-incendio,mateiros,,Equipe X,1.0,grupo:lote;bioma:cerrado"
+        for i in range(1000)
+    ]
+    invalidas = [
+        "lote-0000,Repetida,estacao,incendio,estacao-incendio,mateiros,,,,",  # slug já usado na linha 2
+        "lote-sem-perfil,x,estacao,incendio,nao-existe,mateiros,,,,",
+        "lote-tipo-ruim,x,satelite,incendio,estacao-incendio,mateiros,,,,",
+    ]
+    csv = "\n".join([cabecalho, *validas, *invalidas])
+
+    resposta = cliente.post("/api/v1/dispositivos/lote", content=csv, headers=BRIGADA | {"content-type": "text/csv"})
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert (corpo["total"], corpo["criados"], corpo["falhas"]) == (1003, 1000, 3)
+    falhas = {item["linha"]: item for item in corpo["linhas"] if not item["criado"]}
+    assert set(falhas) == {1002, 1003, 1004}
+    assert "já existe" in falhas[1002]["erro"] and falhas[1002]["credencial"] is None
+    assert "nao-existe" in falhas[1003]["erro"]
+    assert "tipo" in falhas[1004]["erro"]
+    credenciais = [item["credencial"] for item in corpo["linhas"] if item["criado"]]
+    assert len(set(credenciais)) == 1000 and all(credenciais)
+    assert chamadas == [1], "a ACL do broker é regerada uma vez por lote, não por linha"
+    assert contar(banco, "SELECT count(*) FROM dispositivo WHERE slug LIKE 'lote-%'") == 1000
+    filtrados = cliente.get("/api/v1/dispositivos", params={"tag": "grupo:lote"}, headers=BRIGADA).json()
+    assert filtrados["total"] == 1000
+
+
+def test_lote_com_cabecalho_errado_e_recusado_inteiro(cliente):
+    headers = BRIGADA | {"content-type": "text/csv"}
+    sem_site = "slug,nome,tipo,dominio,perfil\nx-01,x,estacao,incendio,estacao-incendio"
+    assert cliente.post("/api/v1/dispositivos/lote", content=sem_site, headers=headers).status_code == 400
+    coluna_extra = "slug,nome,tipo,dominio,perfil,site,senha\nx-01,x,estacao,incendio,estacao-incendio,mateiros,1"
+    assert cliente.post("/api/v1/dispositivos/lote", content=coluna_extra, headers=headers).status_code == 400
+
+
 @pytest.mark.parametrize(
     "rota",
     [

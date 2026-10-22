@@ -17,6 +17,8 @@ import logging
 import os
 from datetime import UTC, datetime
 
+from nucleo.rastreamento import trace_id_atual
+
 # atributos padrão de LogRecord — o resto vem de extra={...}
 _PADRAO = set(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {"message", "asctime", "taskName"}
 
@@ -35,6 +37,8 @@ class FormatoJson(logging.Formatter):
             "msg": record.getMessage(),
         }
         linha |= {k: v for k, v in vars(record).items() if k not in _PADRAO and not k.startswith("_")}
+        if trace_id := trace_id_atual():
+            linha["trace_id"] = trace_id  # abre o trace no Jaeger a partir do log (RF-OBS-03)
         if record.exc_info:
             linha["erro"] = self.formatException(record.exc_info)
         return json.dumps(linha, ensure_ascii=False, default=str)

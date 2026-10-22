@@ -71,13 +71,29 @@ curl -s -X POST localhost:8000/api/v1/dispositivos -H "Authorization: Bearer $TO
   -H 'content-type: application/json' -d '{
     "slug": "sensor-teste-01", "nome": "Sensor de teste", "tipo": "estacao",
     "dominio": "incendio", "perfil": "estacao-incendio", "site": "mirador",
-    "fabricante": "Equipe X", "firmware": "0.1.0"}' | jq
+    "fabricante": "Equipe X", "firmware": "0.1.0", "tags": ["grupo:testes"]}' | jq
 ```
+
+`tags` é opcional. Grupos são tags com o prefixo `grupo:`; para filtrar a frota,
+repita o parâmetro — o dispositivo precisa ter todas:
+`GET /api/v1/dispositivos?tag=grupo:testes&tag=bioma:cerrado` (RF-DIS-07).
 
 A resposta traz a **credencial**, mostrada **uma única vez**; a plataforma
 guarda só o hash. Perdeu? `POST /api/v1/dispositivos/{slug}/credencial` emite
 outra, e a anterior deixa de valer. Em poucos segundos o broker passa a aceitar
 o dispositivo, com ACL restrita aos tópicos dele.
+
+Para muitos aparelhos de uma vez, mande um CSV com as mesmas colunas
+(`tags` separadas por `;`; células vazias = campo ausente; até 5.000 linhas):
+
+```bash
+curl -s -X POST localhost:8000/api/v1/dispositivos/lote -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: text/csv' --data-binary @dispositivos.csv | jq '.criados, .falhas'
+```
+
+Cada linha é independente: as válidas são gravadas e as inválidas voltam em
+`linhas[]` com o número da linha e o motivo. As credenciais geradas vêm nessa
+resposta, **uma única vez** — guarde o JSON (RF-DIS-03).
 
 > O site `mirador` fala direto com a central (porta 8883). Um dispositivo de um
 > site atrás de nó de borda (ex.: `mateiros`) conecta no broker da borda

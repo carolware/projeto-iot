@@ -2,15 +2,19 @@
 dispositivos.py — cadastro (RF-DIS-01), online/offline pelo intervalo do
 perfil (RF-DIS-06), último estado (RF-DAD-02), histórico de telemetria por
 grandeza e intervalo, bruto ou agregado por hora (RF-DAD-01, RF-PRO-04),
-comandos com resposta (RF-DIS-05) e gêmeo do dispositivo (RF-DIS-04).
+comandos com resposta (RF-DIS-05), gêmeo do dispositivo (RF-DIS-04),
+tags/grupos para filtrar a frota (RF-DIS-07; grupo = tag `grupo:xxx`) e
+cadastro em lote por CSV (RF-DIS-03).
 """
 
+import csv
+import io
 import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import AfterValidator, BaseModel, Field, ValidationError
 from sqlalchemy import Interval, insert, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -38,6 +42,10 @@ TOLERANCIA_OFFLINE = 3
 
 Tipo = Literal["estacao", "terminal", "atuador", "conector"]
 
+# Tag é um slug que pode levar um prefixo "chave:" — "grupo:serra-geral", "bioma:cerrado".
+Tag = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]*(:[a-z0-9][a-z0-9_-]*)?$", max_length=64)]
+Tags = Annotated[list[Tag], Field(max_length=32), AfterValidator(lambda tags: sorted(set(tags)))]
+
 
 class DispositivoBase(BaseModel):
     slug: Slug
@@ -49,6 +57,7 @@ class DispositivoBase(BaseModel):
     area: Slug | None = None
     fabricante: str | None = None
     firmware: str | None = None
+    tags: Tags = []
 
 
 class DispositivoEntrada(DispositivoBase):
@@ -65,6 +74,7 @@ class DispositivoAtualizacao(BaseModel):
     area: Slug | None = None
     fabricante: str | None = None
     firmware: str | None = None
+    tags: Tags | None = Field(default=None, description="Substitui o conjunto de tags inteiro")
 
 
 class Dispositivo(DispositivoBase):
@@ -104,6 +114,21 @@ class EstadoDispositivo(BaseModel):
     relatado_em: datetime | None = None
 
 
+class LinhaLote(BaseModel):
+    linha: int = Field(description="Número da linha no CSV (o cabeçalho é a linha 1)")
+    slug: str | None
+    criado: bool
+    erro: str | None = None
+    credencial: str | None = Field(default=None, description="Mostrada só agora, como no cadastro unitário")
+
+
+class ResultadoLote(BaseModel):
+    total: int
+    criados: int
+    falhas: int
+    linhas: list[LinhaLote]
+
+
 class PontoTelemetria(BaseModel):
     tempo: datetime
     grandeza: str
@@ -139,6 +164,7 @@ def _consulta_dispositivos(ctx):
             a.c.slug.label("area"),
             d.c.fabricante,
             d.c.firmware,
+            d.c.tags,
             _expr_online().label("online"),
             d.c.revogado_em.is_not(None).label("revogado"),
             d.c.ultimo_contato_em,
@@ -185,6 +211,34 @@ def _id_dispositivo(conexao, ctx, slug: str):
 # ──────────────────────────────────────────────
 
 
+def _inserir(conexao, ctx, entrada: DispositivoEntrada) -> str:
+    """Grava o dispositivo e a auditoria; devolve a credencial em claro (só existe neste momento)."""
+    p, dom = db.perfil_dispositivo, db.dominio
+    credencial = entrada.credencial or gerar_credencial()
+    perfil_id = conexao.execute(
+        select(p.c.id)
+        .join(dom, dom.c.id == p.c.dominio_id)
+        .where(dom.c.inquilino_id == ctx.id, dom.c.slug == entrada.dominio, p.c.slug == entrada.perfil)
+    ).scalar()
+    if perfil_id is None:
+        raise HTTPException(422, f"perfil {entrada.dominio}/{entrada.perfil} não existe no catálogo")
+    site_id, area_id = _resolver_local(conexao, ctx, entrada.site, entrada.area)
+    novo_id = conexao.execute(
+        insert(db.dispositivo)
+        .values(
+            inquilino_id=ctx.id,
+            perfil_id=perfil_id,
+            site_id=site_id,
+            area_id=area_id,
+            credencial_hash=hash_senha(credencial),
+            **entrada.model_dump(include={"slug", "nome", "tipo", "fabricante", "firmware", "tags"}),
+        )
+        .returning(db.dispositivo.c.id)
+    ).scalar_one()
+    auditar(conexao, ctx, "dispositivo", novo_id, "criar", depois=entrada.model_dump(exclude={"credencial"}))
+    return credencial
+
+
 @router.get("", response_model=Pagina[Dispositivo])
 def listar(
     banco: Banco,
@@ -194,6 +248,7 @@ def listar(
     dominio: str | None = None,
     tipo: Tipo | None = None,
     online: bool | None = None,
+    tag: Annotated[list[str] | None, Query(description="Repetível; o dispositivo precisa ter todas")] = None,
 ):
     d, dom, s = db.dispositivo, db.dominio, db.site
     consulta = _consulta_dispositivos(ctx)
@@ -205,6 +260,8 @@ def listar(
         consulta = consulta.where(d.c.tipo == tipo)
     if online is not None:
         consulta = consulta.where(_expr_online() == online)
+    if tag:
+        consulta = consulta.where(d.c.tags.contains(tag))
     ordenaveis = {"slug": d.c.slug, "nome": d.c.nome, "ultimo_contato_em": d.c.ultimo_contato_em}
     with banco.connect() as conexao:
         return paginar(conexao, consulta, pag, ordenaveis, "slug")
@@ -212,36 +269,92 @@ def listar(
 
 @router.post("", status_code=201, response_model=DispositivoCriado)
 def criar(request: Request, banco: Banco, ctx: Integracao, entrada: DispositivoEntrada):
-    p, dom = db.perfil_dispositivo, db.dominio
-    credencial = entrada.credencial or gerar_credencial()
     try:
         with banco.begin() as conexao:
-            perfil_id = conexao.execute(
-                select(p.c.id)
-                .join(dom, dom.c.id == p.c.dominio_id)
-                .where(dom.c.inquilino_id == ctx.id, dom.c.slug == entrada.dominio, p.c.slug == entrada.perfil)
-            ).scalar()
-            if perfil_id is None:
-                raise HTTPException(422, f"perfil {entrada.dominio}/{entrada.perfil} não existe no catálogo")
-            site_id, area_id = _resolver_local(conexao, ctx, entrada.site, entrada.area)
-            novo_id = conexao.execute(
-                insert(db.dispositivo)
-                .values(
-                    inquilino_id=ctx.id,
-                    perfil_id=perfil_id,
-                    site_id=site_id,
-                    area_id=area_id,
-                    credencial_hash=hash_senha(credencial),
-                    **entrada.model_dump(include={"slug", "nome", "tipo", "fabricante", "firmware"}),
-                )
-                .returning(db.dispositivo.c.id)
-            ).scalar_one()
-            auditar(conexao, ctx, "dispositivo", novo_id, "criar", depois=entrada.model_dump(exclude={"credencial"}))
+            credencial = _inserir(conexao, ctx, entrada)
             criado = _obter(conexao, ctx, entrada.slug)
     except IntegrityError as exc:
         raise conflito_ou_erro(exc) from exc
     request.app.state.acesso.atualizar()
     return criado | {"credencial": credencial}
+
+
+MAX_LINHAS_LOTE = 5000
+COLUNAS_LOTE = list(DispositivoEntrada.model_fields)
+
+
+async def _corpo_csv(request: Request) -> str:
+    try:
+        return (await request.body()).decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, "o CSV precisa estar em UTF-8") from exc
+
+
+def _linha_csv(linha: dict) -> dict:
+    """Célula vazia = campo ausente; `tags` vem separada por ';' ("grupo:jalapao;bioma:cerrado")."""
+    valores = {k.strip(): (v or "").strip() for k, v in linha.items() if k}
+    valores = {k: v for k, v in valores.items() if v}
+    if "tags" in valores:
+        valores["tags"] = [t.strip() for t in valores["tags"].split(";") if t.strip()]
+    return valores
+
+
+def _mensagem(exc: ValidationError) -> str:
+    return "; ".join(f"{'.'.join(map(str, e['loc'])) or 'linha'}: {e['msg']}" for e in exc.errors())
+
+
+@router.post(
+    "/lote",
+    response_model=ResultadoLote,
+    summary="Cadastrar em lote a partir de um CSV",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {"text/csv": {"schema": {"type": "string"}, "example": ",".join(COLUNAS_LOTE)}},
+        }
+    },
+)
+def criar_lote(request: Request, banco: Banco, ctx: Integracao, corpo: Annotated[str, Depends(_corpo_csv)]):
+    """
+    Corpo `text/csv` com cabeçalho; colunas iguais às do cadastro unitário
+    (só `slug`, `nome`, `tipo`, `dominio`, `perfil` e `site` são obrigatórias).
+
+    Cada linha é independente: as válidas são gravadas e as inválidas voltam no
+    relatório com o motivo, sem desfazer as demais. As credenciais geradas
+    aparecem **uma única vez**, nesta resposta. A ACL do broker é regerada uma
+    vez ao fim do lote, não por linha.
+    """
+    leitor = csv.DictReader(io.StringIO(corpo))
+    faltando = {"slug", "nome", "tipo", "dominio", "perfil", "site"} - set(leitor.fieldnames or [])
+    if faltando:
+        raise HTTPException(400, f"cabeçalho sem as colunas obrigatórias: {', '.join(sorted(faltando))}")
+    desconhecidas = set(leitor.fieldnames) - set(COLUNAS_LOTE)
+    if desconhecidas:
+        raise HTTPException(400, f"colunas desconhecidas: {', '.join(sorted(desconhecidas))}")
+    linhas = list(leitor)
+    if len(linhas) > MAX_LINHAS_LOTE:
+        raise HTTPException(413, f"no máximo {MAX_LINHAS_LOTE} linhas por lote")
+
+    resultado = []
+    with banco.begin() as conexao:
+        for numero, linha in enumerate(linhas, start=2):
+            valores = _linha_csv(linha)
+            item = {"linha": numero, "slug": valores.get("slug"), "criado": False}
+            try:
+                entrada = DispositivoEntrada.model_validate(valores)
+                with conexao.begin_nested():  # savepoint: a falha da linha não desfaz as outras
+                    item |= {"criado": True, "credencial": _inserir(conexao, ctx, entrada)}
+            except ValidationError as exc:
+                item["erro"] = _mensagem(exc)
+            except HTTPException as exc:
+                item["erro"] = exc.detail
+            except IntegrityError as exc:
+                item["erro"] = conflito_ou_erro(exc).detail
+            resultado.append(item)
+    criados = sum(item["criado"] for item in resultado)
+    if criados:
+        request.app.state.acesso.atualizar()
+    return {"total": len(resultado), "criados": criados, "falhas": len(resultado) - criados, "linhas": resultado}
 
 
 @router.post(
@@ -290,6 +403,8 @@ def atualizar(banco: Banco, ctx: Integracao, slug: str, entrada: DispositivoAtua
     with banco.begin() as conexao:
         antes = _obter(conexao, ctx, slug)
         valores = {k: v for k, v in mudancas.items() if k in {"nome", "fabricante", "firmware"}}
+        if mudancas.get("tags") is not None:
+            valores["tags"] = mudancas["tags"]
         if "site" in mudancas or "area" in mudancas:
             site_id, area_id = _resolver_local(
                 conexao, ctx, mudancas.get("site") or antes["site"], mudancas.get("area")

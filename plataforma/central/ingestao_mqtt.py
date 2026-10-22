@@ -24,12 +24,14 @@ from central.metricas import PipelineMedido
 from central.mqtt import AdaptadorMqtt, BarramentoMqtt
 from central.repositorios import CatalogoPostgres, FilaInvalidasPostgres, RepositorioPostgres
 from nucleo.logs import configurar_logs
+from nucleo.rastreamento import configurar_rastreamento
 
 INSTANCIA = "ingestao"
 
 
 def main() -> None:
     configurar_logs("central-ingestao")
+    configurar_rastreamento("central-ingestao")
     cfg = configuracao()
     engine = criar_engine(cfg.database_url)
     grupo = os.getenv("CENTRAL_MQTT_GRUPO") or None
