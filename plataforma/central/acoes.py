@@ -25,6 +25,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import Engine, insert, select, update
 
 from central import db
+from central.metricas import ACOES
 from nucleo.mensagem import agora_utc, nova_mensagem
 from nucleo.topicos import montar_topico
 
@@ -228,6 +229,7 @@ class ExecutorAcoes:
         try:
             self.estrategias[tipo].executar(ctx)
         except Exception as exc:  # qualquer falha externa vira retentativa, nunca derruba o motor
+            ACOES.labels(tipo, "falha").inc()
             desistir = tentativas >= MAX_TENTATIVAS
             espera = min(ESPERA_MAXIMA, timedelta(seconds=2**tentativas))
             valores = {
@@ -238,6 +240,7 @@ class ExecutorAcoes:
             }
             log.warning("Ação %s do alarme %s falhou (tentativa %d): %s", tipo, ctx.alarme["id"][:8], tentativas, exc)
         else:
+            ACOES.labels(tipo, "sucesso").inc()
             valores = {"tentativas": tentativas, "status": "sucesso", "executado_em": self.relogio()}
         with self.engine.begin() as conexao:
             conexao.execute(update(e).where(e.c.id == execucao_id).values(**valores))

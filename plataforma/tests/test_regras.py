@@ -160,3 +160,20 @@ def serie(*pontos):
 )
 def test_janela_de_tempo(pontos, fim_min, esperado):
     assert sustentada(QUENTE, serie(*pontos), T0 + timedelta(minutes=fim_min), TOL) is esperado
+
+
+def test_area_geografica_restringe_onde_a_regra_vale():
+    termos = [{"grandeza": "fumaca", "op": ">=", "valor": 85}]
+    por_slug = Regra.de_dict({"nome": "a", "severidade": "alto", "condicao": {"todas": termos, "area": "talhao-07"}})
+    circulo = Regra.de_dict(
+        {
+            "nome": "b",
+            "severidade": "alto",
+            "condicao": {"alguma": termos, "area": {"lat": -10.5, "lon": -46.4, "raio_km": 3}},
+        }
+    )
+    assert por_slug.vale_para("talhao-07", None) and not por_slug.vale_para("talhao-08", (-10.5, -46.4))
+    assert circulo.vale_para(None, (-10.51, -46.41)) and not circulo.vale_para("talhao-07", (-10.8, -46.4))
+    assert not circulo.vale_para("talhao-07", None)  # sem posição, não dá para afirmar que está dentro
+    assert por_slug.grandezas() == {"fumaca"} and por_slug.atende({"fumaca": 90})
+    assert Regra.de_dict({"nome": "c", "severidade": "alto", "condicao": {"todas": termos}}).vale_para(None, None)

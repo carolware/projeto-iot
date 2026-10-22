@@ -8,33 +8,33 @@ Execução:  uvicorn central.app:app --host 0.0.0.0 --port 8000
 """
 
 import json
-import logging
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from prometheus_client import make_asgi_app
 
 from central.acesso_mqtt import GestorAcesso, servicos_da_central
 from central.acoes import AcaoComando, AcaoNotificar, AcaoPublicar, AcaoWebhook, ExecutorAcoes, Publicador
-from central.api import alarmes, catalogo, dispositivos, ingestao, operacao, painel, regras
+from central.api import alarmes, catalogo, dispositivos, ingestao, operacao, painel, regras, telemetria
 from central.api.seguranca import Autenticador
 from central.config import Configuracao, configuracao
 from central.db import criar_engine
+from central.metricas import HTTP, PipelineMedido, ligar_medidores
 from central.motor import MotorRegras
 from central.mqtt import AdaptadorMqtt, BarramentoMqtt
 from central.repositorios import CatalogoPostgres, FilaInvalidasPostgres, RepositorioPostgres
 from central.tempo_real import HubTempoReal
 from nucleo.credenciais import hash_senha
-from nucleo.ingestao import BarramentoComposto, PipelineIngestao
+from nucleo.ingestao import BarramentoComposto
+from nucleo.logs import configurar_logs
 from nucleo.validacao import SCHEMA_V1, diretorio_contratos
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [central] %(levelname)-8s %(message)s",
-    datefmt="%H:%M:%S",
-)
+configurar_logs("central")
+INSTANCIA = "api"  # marca, no barramento, o que esta instância ingeriu (lote HTTP, ingestão embutida)
 
 
 def criar_app(
@@ -55,7 +55,11 @@ def criar_app(
     @asynccontextmanager
     async def ciclo_de_vida(app: FastAPI):
         engine = criar_engine(cfg.database_url)
-        mqtt = AdaptadorMqtt(cfg.mqtt_broker, cfg.mqtt_port, cfg.mqtt_client_id) if cfg.mqtt_ingestao else None
+        mqtt = (
+            AdaptadorMqtt(cfg.mqtt_broker, cfg.mqtt_port, cfg.mqtt_client_id, ingerir=not cfg.mqtt_ingestao_separada)
+            if cfg.mqtt_ingestao
+            else None
+        )
         hub = HubTempoReal()
         publicar_externo = publicar or (_publicador_mqtt(mqtt) if mqtt else (lambda topico, carga: None))
 
@@ -86,13 +90,16 @@ def criar_app(
         app.state.autenticador = autenticador or Autenticador(
             cfg.oidc_emissor, cfg.oidc_audiencia, jwks_url=cfg.oidc_jwks_url
         )
-        app.state.pipeline = PipelineIngestao(
+        app.state.pipeline = PipelineMedido(
             CatalogoPostgres(engine),
             RepositorioPostgres(engine),
             FilaInvalidasPostgres(engine),
             # hub antes do motor: o painel recebe a leitura antes do alarme que ela provoca
-            BarramentoComposto(*([BarramentoMqtt(mqtt.cliente)] if mqtt else []), hub, motor),
+            BarramentoComposto(*([BarramentoMqtt(mqtt.cliente, INSTANCIA)] if mqtt else []), hub, motor),
         )
+        if mqtt and cfg.mqtt_ingestao_separada:
+            mqtt.ouvir_barramento(BarramentoComposto(hub, motor), ignorar_instancia=INSTANCIA)
+        ligar_medidores(motor._fila.qsize, hub.conexoes)
         if motor_em_segundo_plano:
             motor.iniciar()
         if mqtt:
@@ -110,14 +117,26 @@ def criar_app(
         "mensagem canônica em /contratos/mensagem-canonica.v1.schema.json.",
         lifespan=ciclo_de_vida,
     )
+
     # painel web em outra origem (RF-APP-06); só as origens configuradas
+    @app.middleware("http")
+    async def medir_http(request, chamar):
+        inicio = time.perf_counter()
+        resposta = await chamar(request)
+        rota = getattr(request.scope.get("route"), "path", "desconhecida")  # modelo da rota, não a URL concreta
+        HTTP.labels(request.method, rota, resposta.status_code).observe(time.perf_counter() - inicio)
+        return resposta
+
+    # métricas Prometheus (RF-OBS-01); coletadas pelo serviço prometheus do compose
+    app.mount("/metrics", make_asgi_app())
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.cors_origens,
         allow_methods=["*"],
         allow_headers=["Authorization", "Content-Type", "X-Inquilino"],
     )
-    for modulo in (ingestao, catalogo, dispositivos, regras, alarmes, operacao, painel):
+    for modulo in (ingestao, catalogo, dispositivos, telemetria, regras, alarmes, operacao, painel):
         app.include_router(modulo.router)
 
     # Contratos publicados por URL (RF-INT-01)

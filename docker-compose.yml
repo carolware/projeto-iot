@@ -16,10 +16,12 @@ x-plataforma: &plataforma
     context: ./plataforma
   restart: unless-stopped
 
-# cliente MQTT sobre TLS: verifica o broker pela CA da plataforma
-x-tls: &tls
+# ambiente comum: cliente MQTT sobre TLS (verifica o broker pela CA da plataforma)
+# e logs JSON com id_mensagem para correlação (A6)
+x-ambiente: &ambiente
   MQTT_PORT: "8883"
   MQTT_CA: /pki/ca.crt
+  LOG_FORMATO: json
 
 x-mosquitto: &mosquitto
   image: eclipse-mosquitto:2.0.20
@@ -95,12 +97,13 @@ services:
       && python -m central.seeds.seed
       && uvicorn central.app:app --host 0.0.0.0 --port 8000"
     environment:
-      <<: *tls
+      <<: *ambiente
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinela}:${POSTGRES_PASSWORD:-sentinela}@postgres:5432/${POSTGRES_DB:-sentinela}
       MQTT_BROKER: mosquitto-central
       MQTT_USUARIO: central
       MQTT_SENHA: ${MQTT_SENHA_CENTRAL:?defina no .env}
-      CENTRAL_MQTT_CLIENT_ID: central-ingestao   # sessão persistente no broker
+      # a ingestão MQTT roda no serviço central-ingestao; a API ouve o barramento plataforma/...
+      CENTRAL_INGESTAO_SEPARADA: "1"
       MQTT_ACESSO_DIR: /acesso
       # senhas dos usuários de serviço do broker (a central grava só os hashes)
       MQTT_SENHA_CENTRAL: ${MQTT_SENHA_CENTRAL}
@@ -122,12 +125,36 @@ services:
         condition: service_started
     networks: [nuvem]
 
+  # ingestão MQTT da central em processos próprios (RNF-01, RNF-09): assina os
+  # tópicos dos dispositivos, grava no banco e publica as aceitas no barramento
+  # plataforma/... Escala horizontal prevista: réplicas dividem as mensagens por
+  # assinatura compartilhada ($share/ingestao/...), cada uma com sessão persistente
+  # pelo próprio hostname — aumentar `replicas` e a faixa de portas das métricas.
+  central-ingestao:
+    <<: *plataforma
+    command: ["python", "-m", "central.ingestao_mqtt"]
+    deploy:
+      replicas: 1
+    environment:
+      <<: *ambiente
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinela}:${POSTGRES_PASSWORD:-sentinela}@postgres:5432/${POSTGRES_DB:-sentinela}
+      MQTT_BROKER: mosquitto-central
+      MQTT_USUARIO: central
+      MQTT_SENHA: ${MQTT_SENHA_CENTRAL:?defina no .env}
+      CENTRAL_MQTT_GRUPO: ingestao
+    ports:
+      - "9103:9100"   # métricas Prometheus
+    volumes:
+      - ./plataforma/infra/pki/gerado:/pki:ro
+    depends_on: [central]
+    networks: [nuvem]
+
   conector-firms:
     <<: *plataforma
     command: ["python", "simuladores/conector_firms/conector.py"]
     env_file: .env
     environment:
-      <<: *tls
+      <<: *ambiente
       MQTT_BROKER: mosquitto-central
     volumes:
       - ./plataforma/infra/pki/gerado:/pki:ro
@@ -153,7 +180,7 @@ services:
     <<: *plataforma
     command: ["python", "-m", "borda.app"]
     environment:
-      <<: *tls
+      <<: *ambiente
       BORDA_ID: borda-tocantins
       BORDA_SITES: mateiros,lagoa-da-confusao,sandolandia
       BORDA_CREDENCIAL: ${CREDENCIAL_BORDA_TOCANTINS}
@@ -189,7 +216,7 @@ services:
     <<: *plataforma
     command: ["python", "-m", "borda.app"]
     environment:
-      <<: *tls
+      <<: *ambiente
       BORDA_ID: borda-goias
       BORDA_SITES: anapolis,formosa,pirenopolis,jaragua
       BORDA_CREDENCIAL: ${CREDENCIAL_BORDA_GOIAS}
@@ -213,7 +240,7 @@ services:
     command: ["python", "simuladores/estacao/sensor.py"]
     env_file: .env
     environment:
-      <<: *tls
+      <<: *ambiente
       ZONAS: mateiros,lagoa-da-confusao,sandolandia
       MQTT_BROKER: mosquitto-borda-tocantins
     volumes:
@@ -226,7 +253,7 @@ services:
     command: ["python", "simuladores/atuador/atuador.py"]
     env_file: .env
     environment:
-      <<: *tls
+      <<: *ambiente
       ZONAS: mateiros,lagoa-da-confusao,sandolandia
       MQTT_BROKER: mosquitto-borda-tocantins
     volumes:
@@ -239,7 +266,7 @@ services:
     command: ["python", "simuladores/estacao/sensor.py"]
     env_file: .env
     environment:
-      <<: *tls
+      <<: *ambiente
       ZONAS: anapolis,formosa,pirenopolis,jaragua
       MQTT_BROKER: mosquitto-borda-goias
     volumes:
@@ -252,7 +279,7 @@ services:
     command: ["python", "simuladores/atuador/atuador.py"]
     env_file: .env
     environment:
-      <<: *tls
+      <<: *ambiente
       ZONAS: anapolis,formosa,pirenopolis,jaragua
       MQTT_BROKER: mosquitto-borda-goias
     volumes:
@@ -266,7 +293,7 @@ services:
     command: ["python", "simuladores/estacao/sensor.py"]
     env_file: .env
     environment:
-      <<: *tls
+      <<: *ambiente
       ZONAS: novo-progresso,mirador
       MQTT_BROKER: mosquitto-central
     volumes:
@@ -279,7 +306,7 @@ services:
     command: ["python", "simuladores/atuador/atuador.py"]
     env_file: .env
     environment:
-      <<: *tls
+      <<: *ambiente
       ZONAS: novo-progresso,mirador
       MQTT_BROKER: mosquitto-central
     volumes:
@@ -294,7 +321,7 @@ services:
       context: ./plataforma
       dockerfile: simuladores/terminal_go/Dockerfile
     environment:
-      <<: *tls
+      <<: *ambiente
       MQTT_BROKER: mosquitto-central
       SEGREDO_PROVISIONAMENTO: ${SEGREDO_PROVISIONAMENTO}
       AUTO_RECONHECER_S: "20"
@@ -304,6 +331,24 @@ services:
       - ./plataforma/infra/pki/gerado:/pki:ro
     depends_on: [mosquitto-central]
     networks: [nuvem]
+    restart: unless-stopped
+
+  # ── Observabilidade (A6) ───────────────────────────────────────────────────
+  # coleta /metrics da central e das bordas; alertas operacionais em infra/prometheus/alertas.yml.
+  # Fica também nas redes de campo (acesso de gerência): com o link da fazenda cortado,
+  # ainda dá para ver a fila da borda crescendo.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./plataforma/infra/prometheus:/etc/prometheus:ro
+      - prometheus-dados:/prometheus
+    depends_on: [central]
+    networks: [nuvem, campo-tocantins, campo-goias]
     restart: unless-stopped
 
   # ── Aplicação ──────────────────────────────────────────────────────────────
@@ -337,3 +382,4 @@ volumes:
   borda-goias-dados:
   postgres-data:
   keycloak-dados:
+  prometheus-dados:

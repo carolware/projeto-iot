@@ -10,17 +10,24 @@ nós de borda (RF-EDG-03). Formato igual ao das tabelas `regra`/`regra_acao`:
       "condicao": {"todas":  [{"grandeza": "fumaca", "op": ">=", "valor": 85}, ...]}
                 | {"alguma": [...]}
                 | {"ausencia": {"segundos": 300, "perfil": "estacao-incendio"}},
+                # opcional, junto de "todas"/"alguma": onde a regra vale (área geográfica)
+                #   "area": "talhao-07"                                   área cadastrada
+                #   "area": {"lat": -10.4, "lon": -46.4, "raio_km": 5}   círculo (posição da
+                #           mensagem em local.geo ou, sem ela, o centro da área/site do cadastro)
       "acoes": [{"tipo": "alarme"}, {"tipo": "comando", "acao": "acionar_brigada"}, ...]
     }
 
-Escopo "borda" vale só para limiares instantâneos (sem janela e sem ausência):
-o nó de borda decide com a leitura que acabou de chegar, sem histórico.
+Escopo "borda" vale só para limiares instantâneos (sem janela, ausência ou
+área): o nó de borda decide com a leitura que acabou de chegar, sem histórico
+e sem o cadastro.
 """
 
 import operator
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+
+from nucleo.geo import dentro_do_raio
 
 OPERADORES = {
     ">": operator.gt,
@@ -84,6 +91,19 @@ class Regra:
     def de_ausencia(self) -> bool:
         return "ausencia" in self.condicao
 
+    def _termos(self) -> tuple[str, list[dict]]:
+        modo = next(k for k in self.condicao if k != "area")
+        return modo, self.condicao[modo]
+
+    def vale_para(self, area: str | None, posicao: tuple[float, float] | None) -> bool:
+        """A regra se aplica a um dispositivo na `area` (slug) e na `posicao` (lat, lon)?"""
+        limite = self.condicao.get("area")
+        if limite is None:
+            return True
+        if isinstance(limite, str):
+            return area == limite
+        return posicao is not None and dentro_do_raio(limite["lat"], limite["lon"], limite["raio_km"], *posicao)
+
     @property
     def gera_alarme(self) -> bool:
         return any(a.get("tipo") == "alarme" for a in self.acoes)
@@ -94,13 +114,13 @@ class Regra:
     def grandezas(self) -> set[str]:
         if self.de_ausencia:
             return set()
-        return {t["grandeza"] for t in next(iter(self.condicao.values()))}
+        return {t["grandeza"] for t in self._termos()[1]}
 
     def atende(self, valores: dict[str, float]) -> bool:
         """Limiar instantâneo. Grandeza ausente torna o termo falso; regra de ausência nunca 'atende' aqui."""
         if self.de_ausencia:
             return False
-        modo, termos = next(iter(self.condicao.items()))
+        modo, termos = self._termos()
         resultados = (
             t["grandeza"] in valores and OPERADORES[t["op"]](valores[t["grandeza"]], t["valor"]) for t in termos
         )
@@ -123,19 +143,23 @@ def validar_regra(bruto: object) -> list[str]:
         erros.append("janela_s deve ser um inteiro ≥ 0")
     erros += _validar_condicao(bruto.get("condicao"))
     erros += validar_acoes(bruto.get("acoes", []))
-    if escopo == "borda" and (janela or (isinstance(bruto.get("condicao"), dict) and "ausencia" in bruto["condicao"])):
-        erros.append("escopo borda aceita só limiares instantâneos (sem janela_s e sem ausência)")
+    condicao = bruto.get("condicao") if isinstance(bruto.get("condicao"), dict) else {}
+    if escopo == "borda" and (janela or "ausencia" in condicao or "area" in condicao):
+        erros.append("escopo borda aceita só limiares instantâneos (sem janela_s, ausência ou área)")
     return erros
 
 
 def _validar_condicao(condicao: object) -> list[str]:
-    if (
-        not isinstance(condicao, dict)
-        or len(condicao) != 1
-        or next(iter(condicao)) not in ("todas", "alguma", "ausencia")
-    ):
-        return ["condicao deve ter exatamente uma chave: 'todas', 'alguma' ou 'ausencia'"]
-    modo, corpo = next(iter(condicao.items()))
+    modos = [k for k in condicao if k != "area"] if isinstance(condicao, dict) else []
+    if not isinstance(condicao, dict) or len(modos) != 1 or modos[0] not in ("todas", "alguma", "ausencia"):
+        return ["condicao deve ter exatamente uma chave: 'todas', 'alguma' ou 'ausencia' (e, opcional, 'area')"]
+    if "area" in condicao:
+        if modos[0] == "ausencia":
+            return ["area vale só com 'todas' ou 'alguma'"]
+        erro = _validar_area(condicao["area"])
+        if erro:
+            return [erro]
+    modo, corpo = modos[0], condicao[modos[0]]
     if modo == "ausencia":
         segundos = corpo.get("segundos") if isinstance(corpo, dict) else None
         if not isinstance(segundos, int) or isinstance(segundos, bool) or segundos <= 0:
@@ -152,6 +176,19 @@ def _validar_condicao(condicao: object) -> list[str]:
         elif not isinstance(termo.get("valor"), int | float) or isinstance(termo.get("valor"), bool):
             erros.append(f"termo {i}: valor numérico obrigatório")
     return erros
+
+
+def _validar_area(area: object) -> str | None:
+    if isinstance(area, str):
+        return None if area else "area: slug vazio"
+    if not isinstance(area, dict) or set(area) != {"lat", "lon", "raio_km"}:
+        return "area deve ser o slug de uma área ou {lat, lon, raio_km}"
+    lat, lon, raio = area["lat"], area["lon"], area["raio_km"]
+    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in (lat, lon, raio)):
+        return "area: lat, lon e raio_km numéricos"
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180 and raio > 0):
+        return "area: lat em [-90, 90], lon em [-180, 180] e raio_km > 0"
+    return None
 
 
 def validar_acoes(acoes: object) -> list[str]:

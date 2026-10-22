@@ -90,3 +90,15 @@ def test_validacao_nao_altera_a_mensagem():
     original = copy.deepcopy(msg)
     validar_mensagem(msg)
     assert msg == original
+
+
+@pytest.mark.parametrize("arquivo", EXEMPLOS, ids=lambda p: p.name)
+def test_validador_rapido_concorda_com_o_detalhado(arquivo: Path):
+    """O jsonschema-rs decide o caso comum; nunca pode aceitar o que o jsonschema recusa (nem o contrário)."""
+    from nucleo.validacao import _validador, _validador_rapido
+
+    exemplo = json.loads(arquivo.read_text(encoding="utf-8"))
+    variantes = [exemplo, {**exemplo, "versao": "9.9"}, {k: v for k, v in exemplo.items() if k != "timestamp"}]
+    variantes.append({**exemplo, "id_mensagem": 123})
+    for variante in variantes:
+        assert _validador_rapido().is_valid(variante) == _validador().is_valid(variante)

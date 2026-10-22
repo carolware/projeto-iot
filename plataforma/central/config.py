@@ -16,6 +16,9 @@ class Configuracao:
     mqtt_port: int
     mqtt_ingestao: bool
     mqtt_client_id: str | None = None
+    # True: a API não assina os tópicos dos dispositivos; o serviço central-ingestao ingere e
+    # publica no barramento, de onde a API alimenta o motor e o tempo real (RNF-01, RNF-09)
+    mqtt_ingestao_separada: bool = False
     # identidade (Keycloak / OIDC)
     oidc_emissor: str = "http://localhost:8080/realms/sentinela"
     oidc_jwks_url: str | None = None
@@ -44,6 +47,7 @@ def configuracao() -> Configuracao:
         mqtt_port=int(os.getenv("MQTT_PORT", "8883")),
         mqtt_ingestao=os.getenv("CENTRAL_MQTT", "1") == "1",
         mqtt_client_id=os.getenv("CENTRAL_MQTT_CLIENT_ID") or None,
+        mqtt_ingestao_separada=os.getenv("CENTRAL_INGESTAO_SEPARADA", "0") == "1",
         oidc_emissor=emissor,
         oidc_jwks_url=os.getenv("OIDC_JWKS_URL") or f"{emissor}/protocol/openid-connect/certs",
         oidc_audiencia=os.getenv("OIDC_AUDIENCIA", "sentinela-api"),

@@ -9,6 +9,11 @@ log_type error
 log_type warning
 log_type notice
 
+# fila por sessão persistente (a da central): com o padrão de 1000, um pico ou um
+# reinício da central descartaria mensagens QoS 1 no broker (RNF-01, RNF-10)
+max_queued_messages 200000
+max_inflight_messages 1000
+
 per_listener_settings false
 allow_anonymous false
 password_file /mosquitto/acesso/senhas

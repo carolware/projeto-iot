@@ -10,15 +10,18 @@ Autenticação por credencial do dispositivo entra na etapa A4; aqui o
 "autenticar" confere cadastro, revogação e coerência com o tópico.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol
 
-from nucleo.mensagem import Mensagem, agora_utc, formatar_timestamp
+from nucleo.mensagem import Mensagem, agora_utc, formatar_timestamp, parsear_timestamp
 from nucleo.topicos import Topico
 from nucleo.unidades import converter
 from nucleo.validacao import ErroValidacao, validar_mensagem
+
+log = logging.getLogger("nucleo.ingestao")
 
 # ──────────────────────────────────────────────
 # Modelos do domínio
@@ -51,6 +54,7 @@ class DispositivoCadastrado:
     area: str | None = None
     grandezas: dict[str, GrandezaPerfil] = field(default_factory=dict)
     revogado: bool = False
+    geo: tuple[float, float] | None = None  # (lat, lon) do centro da área, ou do site, no cadastro
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,20 @@ class MensagemEnriquecida:
     def id_mensagem(self) -> str:
         return self.mensagem.id_mensagem
 
+    @property
+    def area(self) -> str | None:
+        local = self.mensagem.local or {}
+        return local.get("area") or self.dispositivo.area
+
+    @property
+    def posicao(self) -> tuple[float, float] | None:
+        """(lat, lon): a da própria mensagem (local.geo, GeoJSON lon/lat) ou a do cadastro."""
+        geo = (self.mensagem.local or {}).get("geo")
+        if geo:
+            lon, lat = geo["coordinates"]
+            return lat, lon
+        return self.dispositivo.geo
+
     def para_dict(self) -> dict:
         """Mensagem canônica + contexto do cadastro, como circula no barramento interno."""
         saida = self.mensagem.para_dict()
@@ -81,14 +99,36 @@ class MensagemEnriquecida:
                 for m in self.medidas
             ]
         saida["contexto"] = {
+            "dispositivo_id": self.dispositivo.id,
             "inquilino": self.dispositivo.inquilino,
             "site": self.dispositivo.site,
             "area": self.dispositivo.area,
             "dominio": self.dispositivo.dominio,
             "perfil": self.dispositivo.perfil,
+            "geo": list(self.dispositivo.geo) if self.dispositivo.geo else None,
         }
         saida["recebido_em"] = formatar_timestamp(self.recebido_em)
         return saida
+
+    @classmethod
+    def de_dict(cls, saida: dict) -> "MensagemEnriquecida":
+        """Inverso de `para_dict`: reconstrói a mensagem que outra instância publicou no barramento."""
+        ctx = saida["contexto"]
+        dispositivo = DispositivoCadastrado(
+            id=ctx["dispositivo_id"],
+            slug=saida["dispositivo"],
+            inquilino=ctx["inquilino"],
+            site=ctx["site"],
+            dominio=ctx["dominio"],
+            perfil=ctx["perfil"],
+            area=ctx.get("area"),
+            geo=tuple(ctx["geo"]) if ctx.get("geo") else None,
+        )
+        medidas = tuple(
+            MedidaEnriquecida(m["grandeza"], float(m["valor"]), m["unidade"], bool(m.get("suspeita")))
+            for m in saida.get("medidas", ())
+        )
+        return cls(Mensagem.de_dict(saida), dispositivo, medidas, parsear_timestamp(saida["recebido_em"]))
 
 
 @dataclass(frozen=True)
@@ -96,6 +136,15 @@ class Recusa:
     origem: str
     payload: object
     erros: tuple[ErroValidacao, ...]
+
+
+@dataclass(frozen=True)
+class Entrada:
+    """Uma mensagem bruta como chegou: de onde (DLQ/logs) e por qual tópico (coerência com o cadastro)."""
+
+    bruto: object
+    origem: str
+    topico: Topico | None = None
 
 
 Status = Literal["aceita", "duplicada", "recusada"]
@@ -195,30 +244,41 @@ class PipelineIngestao:
         enviou pode falar por aquele dispositivo (HTTP); no MQTT, o broker já
         garante isso pela ACL de tópicos.
         """
+        return self.processar_entradas([Entrada(bruto, origem, topico) for bruto in brutos], autorizado)
+
+    def processar_entradas(
+        self,
+        entradas: list["Entrada"],
+        autorizado: Callable[[DispositivoCadastrado], bool] | None = None,
+    ) -> list[Resultado]:
+        """Como `processar`, mas cada mensagem com sua origem e tópico (micro-lote do MQTT)."""
+        brutos = [e.bruto for e in entradas]
         recebido_em = self.relogio()
         resultados: dict[int, Resultado] = {}
         recusas: list[Recusa] = []
         candidatas: list[tuple[int, Mensagem]] = []
 
         # receber → validar
-        for indice, bruto in enumerate(brutos):
-            erros = validar_mensagem(bruto, topico)
+        for indice, entrada in enumerate(entradas):
+            erros = validar_mensagem(entrada.bruto, entrada.topico)
             if erros:
-                resultados[indice] = Resultado(indice, "recusada", _id_de(bruto), tuple(erros))
-                recusas.append(Recusa(origem, bruto, tuple(erros)))
+                resultados[indice] = Resultado(indice, "recusada", _id_de(entrada.bruto), tuple(erros))
+                recusas.append(Recusa(entrada.origem, entrada.bruto, tuple(erros)))
             else:
-                candidatas.append((indice, Mensagem.de_dict(bruto)))
+                candidatas.append((indice, Mensagem.de_dict(entrada.bruto)))
 
         # autenticar → enriquecer
         cadastro = self.catalogo.buscar_dispositivos({m.dispositivo for _, m in candidatas})
         enriquecidas: list[tuple[int, MensagemEnriquecida]] = []
         for indice, mensagem in candidatas:
             try:
-                dispositivo = _autenticar(mensagem, cadastro.get(mensagem.dispositivo), topico, autorizado)
+                dispositivo = _autenticar(
+                    mensagem, cadastro.get(mensagem.dispositivo), entradas[indice].topico, autorizado
+                )
                 medidas = _enriquecer_medidas(mensagem, dispositivo)
             except _Recusada as recusada:
                 resultados[indice] = Resultado(indice, "recusada", mensagem.id_mensagem, recusada.erros)
-                recusas.append(Recusa(origem, brutos[indice], recusada.erros))
+                recusas.append(Recusa(entradas[indice].origem, brutos[indice], recusada.erros))
                 continue
             enriquecidas.append((indice, MensagemEnriquecida(mensagem, dispositivo, medidas, recebido_em)))
 
@@ -248,12 +308,38 @@ class PipelineIngestao:
             for recusa in recusas:
                 self.barramento.publicar_recusada(recusa)
 
-        return [resultados[i] for i in range(len(brutos))]
+        saida = [resultados[i] for i in range(len(brutos))]
+        _registrar(saida, entradas)
+        return saida
 
 
 # ──────────────────────────────────────────────
 # Filtros
 # ──────────────────────────────────────────────
+
+
+def _registrar(resultados: list[Resultado], entradas: list[Entrada]) -> None:
+    """Log de correlação: cada mensagem com seu id_mensagem (aceitas em DEBUG, recusadas em WARNING)."""
+    detalhar = log.isEnabledFor(logging.DEBUG)
+    for r in resultados:
+        if r.status == "recusada":
+            log.warning(
+                "mensagem recusada: %s",
+                "; ".join(str(e) for e in r.erros),
+                extra={"id_mensagem": r.id_mensagem, "origem": entradas[r.indice].origem},
+            )
+        elif detalhar:
+            bruto = entradas[r.indice].bruto if isinstance(entradas[r.indice].bruto, dict) else {}
+            log.debug(
+                "mensagem %s",
+                r.status,
+                extra={
+                    "id_mensagem": r.id_mensagem,
+                    "dispositivo": bruto.get("dispositivo"),
+                    "via": bruto.get("via"),
+                    "origem": entradas[r.indice].origem,
+                },
+            )
 
 
 def _id_de(bruto: object) -> str | None:

@@ -33,7 +33,8 @@ class RegraEntrada(BaseModel):
     janela_s: int = Field(default=0, ge=0, description="> 0: a condição precisa valer durante toda a janela")
     condicao: dict = Field(
         examples=[{"todas": [{"grandeza": "temperatura", "op": ">", "valor": 30}]}],
-        description="{'todas': [...]}, {'alguma': [...]} ou {'ausencia': {'segundos': N, 'perfil': slug?}}",
+        description="{'todas': [...]}, {'alguma': [...]} ou {'ausencia': {'segundos': N, 'perfil': slug?}}; "
+        "com 'todas'/'alguma', opcional 'area': slug de área ou {'lat', 'lon', 'raio_km'} (área geográfica)",
     )
     acoes: list[dict] = Field(
         default_factory=lambda: [{"tipo": "alarme"}],

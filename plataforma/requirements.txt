@@ -2,6 +2,7 @@ paho-mqtt==1.6.1
 requests==2.32.3
 python-dotenv==1.0.1
 jsonschema==4.23.0
+jsonschema-rs==0.58.6
 
 # central (cloud)
 fastapi==0.157.0

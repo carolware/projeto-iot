@@ -48,8 +48,12 @@ class Sincronizador:
                 recusadas[item.id_mensagem] = "; ".join(f"{e['campo']}: {e['motivo']}" for e in resultado["erros"])
         self.fila.marcar_enviadas(confirmadas)
         self.fila.marcar_recusadas(recusadas)
+        if log.isEnabledFor(logging.DEBUG):
+            for id_mensagem in confirmadas:
+                log.debug("mensagem confirmada pela central", extra={"id_mensagem": id_mensagem})
         if recusadas:
-            log.warning("Central recusou %d mensagem(ns): %s", len(recusadas), next(iter(recusadas.values())))
+            for id_mensagem, motivo in recusadas.items():
+                log.warning("central recusou a mensagem: %s", motivo, extra={"id_mensagem": id_mensagem})
         return len(itens)
 
     def esvaziar(self) -> int:

@@ -356,8 +356,11 @@ API em `http://localhost:8000`:
 - Swagger (OpenAPI 3): `http://localhost:8000/docs`
 - Contratos: `http://localhost:8000/contratos/asyncapi.yaml` e
   `http://localhost:8000/contratos/mensagem-canonica.v1.schema.json`
-- Ingestão: `POST /api/v1/ingestao` e `POST /api/v1/ingestao/lote`; também
-  assina MQTT nos tópicos `{inquilino}/{site}/{dominio}/{dispositivo}/{telemetria|evento|estado}`
+- Ingestão: `POST /api/v1/ingestao` e `POST /api/v1/ingestao/lote`; o serviço
+  `central-ingestao` assina MQTT nos tópicos `{inquilino}/{site}/{dominio}/{dispositivo}/{telemetria|evento|estado}`
+- Séries: `GET /api/v1/telemetria?area=&site=&dispositivo=&grandeza=&inicio=&fim=&agregacao=bruto|1h`
+- Regras com área geográfica: `"condicao": {"todas": [...], "area": "talhao-07"}` ou
+  `"area": {"lat": -10.8, "lon": -46.42, "raio_km": 5}` (posição da mensagem em `local.geo` ou o cadastro)
 - Rotas protegidas por token OIDC do Keycloak (ver 5.3.3); bordas e
   dispositivos usam a própria credencial (HTTP Basic)
 
@@ -395,6 +398,34 @@ num banco descartável `sentinela_teste` e são pulados se ele estiver fora do a
 ```bash
 cd plataforma && pip install -r requirements-dev.txt -e . && pytest --cov
 ```
+
+### 5.3.4 Observabilidade e teste de carga
+
+- **Logs**: JSON, uma linha por evento (`LOG_FORMATO=json` nos contêineres), com o
+  `id_mensagem` como correlação da borda até a central:
+  `docker compose logs borda-goias central central-ingestao | grep <id_mensagem>`
+  (`LOG_NIVEL=DEBUG` registra cada mensagem).
+- **Métricas** (Prometheus): API em `:8000/metrics/`, ingestão MQTT em `:9103/metrics`,
+  bordas em `:9101`/`:9102`. O Prometheus em http://localhost:9090 coleta tudo e
+  mantém alertas operacionais (serviço fora, borda sem sincronizar, fila crescendo,
+  DLQ, motor atrasado, latência alta, ações falhando) em `plataforma/infra/prometheus/alertas.yml`.
+- **Ingestão separada**: o serviço `central-ingestao` assina os tópicos dos
+  dispositivos, grava em micro-lotes e publica as aceitas no barramento
+  `plataforma/...`; a API ouve o barramento e alimenta o motor de regras e o tempo real.
+
+Teste de carga (cadastra pela API o domínio `carga`, 50 dispositivos e uma regra de
+pico; publica por MQTT/TLS e mede pelo WebSocket do painel):
+
+```bash
+python plataforma/simuladores/carga/carga.py --taxa 1000 --dispositivos 50 --duracao 60
+```
+
+Resultado na máquina de desenvolvimento (PoC, um núcleo por processo Python), a
+1.000 msg/s oferecidas: nenhuma mensagem perdida, vazão sustentada de ~750 msg/s
+pela ingestão, p95 de ~6 s da publicação ao painel e ~8 s até o alarme; abaixo de
+~700 msg/s as metas do RNF-02 (2 s / 3 s) são atendidas. O teto atual é a CPU do
+cliente MQTT em Python puro e o Postgres; os caminhos de escala estão prontos
+(réplicas da ingestão com assinatura compartilhada `$share/ingestao/...`).
 
 ### 5.4 Frontend (Desenvolvimento Local)
 

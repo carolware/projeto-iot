@@ -37,6 +37,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from central import db
 from central.acoes import ExecutorAcoes, FalhaAcao, Publicador, enviar_comando
+from central.metricas import ALARMES, LATENCIA_REGRA
 from nucleo.geo import distancia_km
 from nucleo.ingestao import MensagemEnriquecida, Recusa
 from nucleo.mensagem import agora_utc
@@ -48,6 +49,9 @@ ATRASO_MAX = timedelta(minutes=5)  # leitura mais velha que isso não abre alarm
 CACHE_REGRAS_S = 5.0
 CICLO_AGENDADOR_S = 5.0
 VERIFICAR_RETORNO_S = 5.0
+# alarmes abertos por dispositivo ficam em memória por até 2 s: toda mudança feita por este
+# motor invalida na hora; o TTL só limita a defasagem de mudanças feitas fora dele (RNF-01)
+ABERTOS_TTL_S = 2.0
 ROTULO_SEVERIDADE = {
     "medio": "médio",
     "alto": "alto",
@@ -80,6 +84,7 @@ class MotorRegras:
         self.relogio = relogio
         self._cache: dict[tuple[str, str], tuple[float, list[Regra]]] = {}
         self._retorno_verificado: dict[uuid.UUID, float] = {}
+        self._cache_abertos: dict[uuid.UUID, tuple[float, list[dict]]] = {}
         self._fila: queue.Queue[MensagemEnriquecida | None] = queue.Queue()
         self._parar = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -145,7 +150,11 @@ class MotorRegras:
     def _avaliar_telemetria(self, m: MensagemEnriquecida, origem: Origem) -> None:
         if self.relogio() - m.mensagem.timestamp > ATRASO_MAX:
             return
-        regras = [r for r in self.regras(origem.inquilino, origem.dominio) if r.gera_alarme and not r.de_ausencia]
+        regras = [
+            r
+            for r in self.regras(origem.inquilino, origem.dominio)
+            if r.gera_alarme and not r.de_ausencia and r.vale_para(m.area, m.posicao)  # área geográfica (RF-PRO-02)
+        ]
         if not regras:
             return
         valores = {medida.grandeza: medida.valor for medida in m.medidas}
@@ -387,6 +396,7 @@ class MotorRegras:
                 .on_conflict_do_nothing()
                 .returning(a.c.id)
             ).scalar()
+        self._cache_abertos.pop(origem.dispositivo_id, None)
         if novo_id is None:  # corrida com outra thread: já existe
             return None
 
@@ -398,7 +408,11 @@ class MotorRegras:
             origem.inquilino,
             origem.dispositivo,
             origem_alarme,
+            extra={"alarme_id": alarme["id"], "id_mensagem": dados.get("mensagem_origem")},
         )
+        ALARMES.labels(regra.severidade, origem_alarme).inc()
+        if origem_alarme == "central":
+            LATENCIA_REGRA.observe(max(0.0, (agora_utc() - ocorrido_em).total_seconds()))
         self._publicar_alarme("aberto", alarme)
 
         # escalada: um alarme mais severo encerra os menos severos de regras concorrentes
@@ -440,6 +454,7 @@ class MotorRegras:
                 .values(estado="resolvido", resolvido_em=self.relogio(), resolvido_por=por, atualizado_em=func.now())
                 .returning(a.c.id)
             ).scalar()
+        self._cache_abertos.clear()
         if alterado is None:
             return None
         alarme = self.carregar_alarme(alarme_id)
@@ -548,6 +563,14 @@ class MotorRegras:
         return regras
 
     def _abertos(self, dispositivo_id: uuid.UUID) -> list[dict]:
+        guardado = self._cache_abertos.get(dispositivo_id)
+        if guardado and time.monotonic() - guardado[0] < ABERTOS_TTL_S:
+            return guardado[1]
+        abertos = self._consultar_abertos(dispositivo_id)
+        self._cache_abertos[dispositivo_id] = (time.monotonic(), abertos)
+        return abertos
+
+    def _consultar_abertos(self, dispositivo_id: uuid.UUID) -> list[dict]:
         a = db.alarme
         with self.engine.connect() as conexao:
             linhas = conexao.execute(

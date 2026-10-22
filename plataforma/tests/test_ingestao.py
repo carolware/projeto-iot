@@ -7,6 +7,7 @@ import pytest
 from nucleo import Medida, nova_mensagem, parsear_topico
 from nucleo.ingestao import (
     DispositivoCadastrado,
+    Entrada,
     GrandezaPerfil,
     MensagemEnriquecida,
     PipelineIngestao,
@@ -110,11 +111,13 @@ def test_mensagem_valida_e_aceita_enriquecida_e_publicada(ambiente):
     assert gravada.recebido_em == AGORA
     contexto = barramento.aceitas[0].para_dict()["contexto"]
     assert contexto == {
+        "dispositivo_id": ESTACAO.id,
         "inquilino": "brigada-cerrado",
         "site": "mateiros",
         "area": None,
         "dominio": "incendio",
         "perfil": "estacao-incendio",
+        "geo": None,
     }
     assert fila.recusas == []
 
@@ -206,6 +209,18 @@ def test_topico_precisa_bater_com_o_cadastro(ambiente):
     assert pipeline.processar([leitura()], "mqtt", certo)[0].status == "aceita"
     [resultado] = pipeline.processar([leitura()], "mqtt", outro_inquilino)
     assert resultado.status == "recusada" and resultado.erros[0].campo == "topico"
+
+
+def test_micro_lote_confere_cada_mensagem_com_o_proprio_topico(ambiente):
+    pipeline, repo, fila, _ = ambiente
+    certo = parsear_topico("brigada-cerrado/mateiros/incendio/est-mateiros-01/telemetria")
+    errado = parsear_topico("pref-anapolis/mateiros/incendio/est-mateiros-01/telemetria")
+    resultados = pipeline.processar_entradas(
+        [Entrada(leitura(), "mqtt:a", certo), Entrada(leitura(), "mqtt:b", errado), Entrada(leitura(), "mqtt:c", certo)]
+    )
+    assert [r.status for r in resultados] == ["aceita", "recusada", "aceita"]
+    assert len(repo.chamadas) == 1 and len(repo.gravadas) == 2
+    assert [r.origem for r in fila.recusas] == ["mqtt:b"]
 
 
 def test_unidade_e_normalizada_para_a_do_perfil(ambiente):

@@ -7,7 +7,7 @@ import json
 import uuid
 from collections import defaultdict
 
-from sqlalchemy import Engine, func, insert, select, update
+from sqlalchemy import Engine, bindparam, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from central import db
@@ -38,6 +38,8 @@ class CatalogoPostgres:
                 i.c.slug.label("inquilino"),
                 s.c.slug.label("site"),
                 a.c.slug.label("area"),
+                func.coalesce(a.c.lat, s.c.lat).label("lat"),
+                func.coalesce(a.c.lon, s.c.lon).label("lon"),
                 dom.c.slug.label("dominio"),
                 p.c.slug.label("perfil"),
             )
@@ -67,6 +69,7 @@ class CatalogoPostgres:
                 perfil=linha.perfil,
                 grandezas=grandezas[linha.perfil_id],
                 revogado=linha.revogado_em is not None,
+                geo=(linha.lat, linha.lon) if linha.lat is not None else None,
             )
             for linha in linhas
         }
@@ -74,8 +77,6 @@ class CatalogoPostgres:
 
 class RepositorioPostgres:
     """Grava mensagens de forma idempotente (Idempotent Receiver) numa única transação."""
-
-    TAMANHO_BLOCO = 1000
 
     def __init__(self, engine: Engine):
         self.engine = engine
@@ -85,29 +86,25 @@ class RepositorioPostgres:
             return set()
         novas: set[str] = set()
         with self.engine.begin() as conexao:
-            # blocos: o Postgres aceita no máximo 65535 parâmetros por comando
-            for inicio in range(0, len(mensagens), self.TAMANHO_BLOCO):
-                bloco = mensagens[inicio : inicio + self.TAMANHO_BLOCO]
-                inseridas = conexao.execute(
-                    pg_insert(db.mensagem)
-                    .values(
-                        [
-                            {
-                                "id_mensagem": uuid.UUID(m.id_mensagem),
-                                "dispositivo_id": uuid.UUID(m.dispositivo.id),
-                                "tipo": m.mensagem.tipo,
-                                "medido_em": m.mensagem.timestamp,
-                                "recebido_em": m.recebido_em,
-                                "via": m.mensagem.via,
-                                "fonte": m.mensagem.fonte,
-                            }
-                            for m in bloco
-                        ]
-                    )
-                    .on_conflict_do_nothing(index_elements=["id_mensagem"])
-                    .returning(db.mensagem.c.id_mensagem)
-                ).scalars()
-                novas.update(str(i) for i in inseridas)
+            # executemany: o comando compilado fica em cache e o driver junta as linhas em lotes
+            inseridas = conexao.execute(
+                pg_insert(db.mensagem)
+                .on_conflict_do_nothing(index_elements=["id_mensagem"])
+                .returning(db.mensagem.c.id_mensagem),
+                [
+                    {
+                        "id_mensagem": uuid.UUID(m.id_mensagem),
+                        "dispositivo_id": uuid.UUID(m.dispositivo.id),
+                        "tipo": m.mensagem.tipo,
+                        "medido_em": m.mensagem.timestamp,
+                        "recebido_em": m.recebido_em,
+                        "via": m.mensagem.via,
+                        "fonte": m.mensagem.fonte,
+                    }
+                    for m in mensagens
+                ],
+            ).scalars()
+            novas.update(str(i) for i in inseridas)
             gravar = [m for m in mensagens if m.id_mensagem in novas]
             if gravar:
                 self._gravar_telemetria(conexao, [m for m in gravar if m.mensagem.tipo == "telemetria"])
@@ -143,15 +140,14 @@ class RepositorioPostgres:
             if chave not in mais_recentes or linha["tempo"] >= mais_recentes[chave]["tempo"]:
                 mais_recentes[chave] = linha
         ue = db.ultimo_estado
-        stmt = pg_insert(ue).values(
-            [{k: v for k, v in linha.items() if k != "id_mensagem"} for linha in mais_recentes.values()]
-        )
+        stmt = pg_insert(ue)
         conexao.execute(
             stmt.on_conflict_do_update(
                 index_elements=["dispositivo_id", "grandeza"],
                 set_={c: stmt.excluded[c] for c in ("valor", "unidade", "suspeita", "tempo")},
                 where=ue.c.tempo < stmt.excluded.tempo,
-            )
+            ),
+            [{k: v for k, v in linha.items() if k != "id_mensagem"} for linha in mais_recentes.values()],
         )
 
     @staticmethod
@@ -203,12 +199,13 @@ class RepositorioPostgres:
             if m.dispositivo.id not in ultimo or m.mensagem.timestamp > ultimo[m.dispositivo.id]:
                 ultimo[m.dispositivo.id] = m.mensagem.timestamp
         d = db.dispositivo
-        for dispositivo_id, quando in ultimo.items():
-            conexao.execute(
-                update(d)
-                .where(d.c.id == uuid.UUID(dispositivo_id))
-                .values(ultimo_contato_em=func.greatest(func.coalesce(d.c.ultimo_contato_em, quando), quando))
-            )
+        quando = bindparam("quando")
+        conexao.execute(
+            update(d)
+            .where(d.c.id == bindparam("alvo"))
+            .values(ultimo_contato_em=func.greatest(func.coalesce(d.c.ultimo_contato_em, quando), quando)),
+            [{"alvo": uuid.UUID(i), "quando": q} for i, q in ultimo.items()],
+        )
 
 
 class FilaInvalidasPostgres:

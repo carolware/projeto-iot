@@ -35,6 +35,7 @@ from borda.fila import PRIORIDADE_ALARME, PRIORIDADE_ESTADO, PRIORIDADE_TELEMETR
 from borda.sincronizador import LinkIndisponivel, Sincronizador
 from nucleo.conexao_mqtt import configurar
 from nucleo.credenciais import gravar_se_mudou
+from nucleo.logs import configurar_logs
 from nucleo.regras import Regra
 from nucleo.topicos import padrao_assinatura, parsear_topico
 from nucleo.validacao import validar_mensagem
@@ -70,11 +71,7 @@ METRICAS_PORTA = int(os.getenv("METRICAS_PORTA", "9100"))
 
 PRIORIDADES = {"telemetria": PRIORIDADE_TELEMETRIA, "estado": PRIORIDADE_ESTADO, "evento": PRIORIDADE_ESTADO}
 
-logging.basicConfig(
-    level=logging.INFO,
-    format=f"%(asctime)s [{BORDA_ID}] %(levelname)-8s %(message)s",
-    datefmt="%H:%M:%S",
-)
+configurar_logs(BORDA_ID)
 log = logging.getLogger("borda")
 
 # ──────────────────────────────────────────────
@@ -134,8 +131,11 @@ class NoBorda:
 
         bruto["via"] = BORDA_ID
         M_RECEBIDAS.labels(bruto["tipo"]).inc()
+        correlacao = {"id_mensagem": bruto["id_mensagem"], "dispositivo": bruto["dispositivo"], "tipo": bruto["tipo"]}
         if not self.fila.enfileirar(bruto, PRIORIDADES[bruto["tipo"]]):
-            return  # reenvio do dispositivo: já estava na fila
+            log.debug("reenvio ignorado (já na fila)", extra=correlacao)
+            return
+        log.debug("mensagem enfileirada", extra=correlacao)
 
         decisao = self.decisor.avaliar(bruto, topico)
         if decisao:
@@ -149,12 +149,17 @@ class NoBorda:
                 topico.site,
                 decisao.regra.nome,
                 ", ".join(c["dados"]["acao"] for _, c in decisao.comandos) or "sem comando",
+                extra={
+                    "id_mensagem": bruto["id_mensagem"],
+                    "id_alarme_local": decisao.alarme["id_mensagem"],
+                    "comandos": [c["id_mensagem"] for _, c in decisao.comandos],
+                },
             )
 
     def _recusar(self, msg: mqtt.MQTTMessage, motivo: str) -> None:
         M_INVALIDAS.inc()
         self.fila.registrar_invalida(f"mqtt:{msg.topic}", msg.payload, motivo)
-        log.warning("Recusada %s: %s", msg.topic, motivo)
+        log.warning("mensagem recusada na borda: %s", motivo, extra={"topico": msg.topic})
 
 
 # ──────────────────────────────────────────────

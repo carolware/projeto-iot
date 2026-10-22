@@ -19,7 +19,7 @@ from nucleo.ingestao import MensagemEnriquecida, Recusa
 
 log = logging.getLogger("central.tempo_real")
 
-LIMITE_FILA = 500  # navegador lento demais perde as mensagens mais antigas, não trava o servidor
+LIMITE_FILA = 5000  # ~5 s a 1.000 msg/s; navegador lento demais perde as mensagens mais antigas, não trava o servidor
 
 
 class HubTempoReal:
@@ -39,12 +39,13 @@ class HubTempoReal:
     def conexoes(self) -> int:
         return sum(len(filas) for filas in self._assinantes.values())
 
-    def publicar(self, inquilino: str, carga: dict) -> None:
-        """Seguro para chamar de qualquer thread."""
+    def publicar(self, inquilino: str, carga: dict, serializavel: bool = False) -> None:
+        """Seguro para chamar de qualquer thread. `serializavel`: a carga já é JSON puro (pula a conversão)."""
         assinantes = list(self._assinantes.get(inquilino, {}).items())
         if not assinantes:
             return
-        carga = jsonable_encoder(carga)
+        if not serializavel:
+            carga = jsonable_encoder(carga)
         for fila, loop in assinantes:
             try:
                 loop.call_soon_threadsafe(_entregar, fila, carga)
@@ -55,7 +56,9 @@ class HubTempoReal:
 
     def publicar_aceita(self, mensagem: MensagemEnriquecida) -> None:
         self.publicar(
-            mensagem.dispositivo.inquilino, {"tipo": mensagem.mensagem.tipo, "mensagem": mensagem.para_dict()}
+            mensagem.dispositivo.inquilino,
+            {"tipo": mensagem.mensagem.tipo, "mensagem": mensagem.para_dict()},
+            serializavel=True,  # para_dict() já devolve só str/números/listas/dicts
         )
 
     def publicar_recusada(self, recusa: Recusa) -> None:

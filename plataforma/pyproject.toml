@@ -7,7 +7,7 @@ name = "sentinela-nucleo"
 version = "1.0.0"
 description = "Domínio compartilhado (central + borda) da plataforma IoT Sentinela"
 requires-python = ">=3.11"
-dependencies = ["jsonschema>=4.23"]
+dependencies = ["jsonschema>=4.23", "jsonschema-rs>=0.58"]
 
 [tool.setuptools]
 packages = ["nucleo"]

@@ -146,3 +146,32 @@ def test_cors_libera_so_o_painel(cliente):
         "/api/v1/painel", headers={"Origin": "http://evil.example", "Access-Control-Request-Method": "GET"}
     )
     assert "access-control-allow-origin" not in negado.headers
+
+
+def test_metricas_prometheus(cliente):
+    """RF-OBS-01: métricas em formato Prometheus, por módulo."""
+    enviar(cliente, leitura("est-mirador-01"))
+    texto = cliente.get("/metrics/").text
+    for metrica in (
+        'sentinela_mensagens_total{canal="lote",status="aceita"}',
+        "sentinela_ingestao_latencia_segundos_bucket",
+        "sentinela_pipeline_segundos_count",
+        "sentinela_motor_fila",
+        "sentinela_tempo_real_conexoes",
+        'sentinela_http_duracao_segundos_count{metodo="POST",rota="/api/v1/ingestao/lote",status="200"}',
+    ):
+        assert metrica in texto, metrica
+
+
+def test_logs_json_com_correlacao(caplog):
+    """RF-OBS-02: cada linha é JSON e carrega o id_mensagem de correlação."""
+    import json
+    import logging
+
+    from nucleo.logs import FormatoJson
+
+    registro = logging.LogRecord("nucleo.ingestao", logging.INFO, "", 0, "mensagem %s", ("aceita",), None)
+    registro.id_mensagem = "b6d1e0c4-5f7a-4c2e-9d13-8a2f61c0e9b7"
+    linha = json.loads(FormatoJson("central").format(registro))
+    assert linha["msg"] == "mensagem aceita" and linha["servico"] == "central"
+    assert linha["id_mensagem"] == "b6d1e0c4-5f7a-4c2e-9d13-8a2f61c0e9b7" and linha["ts"].endswith("Z")
