@@ -102,3 +102,10 @@ def test_validador_rapido_concorda_com_o_detalhado(arquivo: Path):
     variantes.append({**exemplo, "id_mensagem": 123})
     for variante in variantes:
         assert _validador_rapido().is_valid(variante) == _validador().is_valid(variante)
+
+
+def test_asyncapi_e_yaml_valido_com_os_quatro_canais():
+    yaml = pytest.importorskip("yaml")
+    documento = yaml.safe_load((EXEMPLOS[0].parents[1] / "asyncapi.yaml").read_text(encoding="utf-8"))
+    assert documento["asyncapi"].startswith("3.")
+    assert set(documento["channels"]) == {"telemetria", "evento", "estado", "comando"}

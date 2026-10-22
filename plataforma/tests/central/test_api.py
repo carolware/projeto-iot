@@ -298,6 +298,7 @@ def test_ordenacao_so_aceita_campos_permitidos(cliente):
 def test_contratos_publicados_por_url(cliente):
     """RF-INT-01 e RF-APP-01: contratos e OpenAPI acessíveis por URL."""
     assert cliente.get("/contratos/asyncapi.yaml").status_code == 200
+    assert "Histórico" in cliente.get("/contratos/CHANGELOG.md").text
     assert cliente.get("/contratos/mensagem-canonica.v1.schema.json").json()["title"].startswith("Mensagem canônica")
     assert cliente.get("/contratos/exemplos/telemetria-estacao.json").status_code == 200
     assert cliente.get("/contratos/../config.py").status_code == 404

@@ -128,8 +128,9 @@ services:
   # ingestão MQTT da central em processos próprios (RNF-01, RNF-09): assina os
   # tópicos dos dispositivos, grava no banco e publica as aceitas no barramento
   # plataforma/... Escala horizontal prevista: réplicas dividem as mensagens por
-  # assinatura compartilhada ($share/ingestao/...), cada uma com sessão persistente
-  # pelo próprio hostname — aumentar `replicas` e a faixa de portas das métricas.
+  # assinatura compartilhada ($share/ingestao/...). Cada réplica precisa de um
+  # client id FIXO (sessão persistente): ao reduzir réplicas, apague a sessão da
+  # que saiu, senão o broker continua enfileirando para ela a parte dela.
   central-ingestao:
     <<: *plataforma
     command: ["python", "-m", "central.ingestao_mqtt"]
@@ -142,6 +143,7 @@ services:
       MQTT_USUARIO: central
       MQTT_SENHA: ${MQTT_SENHA_CENTRAL:?defina no .env}
       CENTRAL_MQTT_GRUPO: ingestao
+      CENTRAL_MQTT_CLIENT_ID: central-ingestao   # sessão persistente estável entre recriações
     ports:
       - "9103:9100"   # métricas Prometheus
     volumes:

@@ -33,7 +33,9 @@ def main() -> None:
     cfg = configuracao()
     engine = criar_engine(cfg.database_url)
     grupo = os.getenv("CENTRAL_MQTT_GRUPO") or None
-    # client_id estável por réplica: a sessão persistente guarda as mensagens enquanto ela reinicia
+    # client_id estável: a sessão persistente guarda as mensagens enquanto a réplica reinicia.
+    # Sem CENTRAL_MQTT_CLIENT_ID vale o hostname, que muda quando o contêiner é recriado — a
+    # sessão antiga continuaria no grupo compartilhado, recebendo a parte dela das mensagens.
     client_id = cfg.mqtt_client_id or f"central-ingestao-{socket.gethostname()}"
     mqtt = AdaptadorMqtt(cfg.mqtt_broker, cfg.mqtt_port, client_id, grupo=grupo)
     pipeline = PipelineMedido(

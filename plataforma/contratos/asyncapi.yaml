@@ -19,23 +19,29 @@ defaultContentType: application/json
 
 servers:
   central:
-    host: mosquitto-central:1883
-    protocol: mqtt
+    host: mosquitto-central:8883
+    protocol: secure-mqtt
     protocolVersion: 3.1.1
-    description: Broker da instância central (cloud). Recebe dos nós de borda e dos dispositivos urbanos.
-  central-ws:
-    host: localhost:9001
-    protocol: ws
-    description: Mesmo broker via WebSocket (navegador).
+    description: |
+      Broker da instância central (cloud), só TLS 1.2+ verificado pela CA da
+      plataforma (também aceita MQTT 5.0). Recebe dos dispositivos com conexão
+      direta (zonas sem borda, terminais urbanos). Na máquina: localhost:8883.
+    security:
+      - $ref: "#/components/securitySchemes/credencialDispositivo"
   borda:
-    host: "{borda}:1883"
-    protocol: mqtt
+    host: "{borda}:8883"
+    protocol: secure-mqtt
     protocolVersion: 3.1.1
-    description: Broker local de um nó de borda (fog). Dispositivos rurais publicam aqui; o nó guarda e sincroniza com a central.
+    description: |
+      Broker local de um nó de borda (fog), só TLS. Dispositivos rurais publicam
+      aqui; o nó guarda e sincroniza com a central. Na máquina: localhost:8884
+      (Tocantins) e localhost:8885 (Goiás).
     variables:
       borda:
         enum: [mosquitto-borda-tocantins, mosquitto-borda-goias]
         default: mosquitto-borda-tocantins
+    security:
+      - $ref: "#/components/securitySchemes/credencialDispositivo"
 
 channels:
   telemetria:
@@ -43,11 +49,11 @@ channels:
     description: Medições periódicas (dispositivo → plataforma).
     parameters: &parametros
       inquilino:
-        description: Slug do inquilino (ex.: brigada-cerrado, pref-anapolis).
+        description: "Slug do inquilino (ex.: brigada-cerrado, pref-anapolis)."
       site:
-        description: Slug do local (ex.: mateiros, defesa-civil).
+        description: "Slug do local (ex.: mateiros, defesa-civil)."
       dominio:
-        description: Slug do domínio no catálogo do inquilino (ex.: incendio, alerta_publico).
+        description: "Slug do domínio no catálogo do inquilino (ex.: incendio, alerta_publico)."
       dispositivo:
         description: Slug do dispositivo; deve ser igual ao campo `dispositivo` da mensagem.
     messages:
@@ -56,7 +62,7 @@ channels:
 
   evento:
     address: "{inquilino}/{site}/{dominio}/{dispositivo}/evento"
-    description: Ocorrências pontuais (dispositivo → plataforma), ex.: confirmação de recebimento de alerta.
+    description: "Ocorrências pontuais (dispositivo → plataforma), ex.: confirmação de recebimento de alerta."
     parameters: *parametros
     messages:
       evento:
@@ -101,6 +107,13 @@ operations:
       $ref: "#/channels/comando"
 
 components:
+  securitySchemes:
+    credencialDispositivo:
+      type: userPassword
+      description: |
+        Usuário = slug do dispositivo; senha = credencial emitida no cadastro
+        (POST /api/v1/dispositivos). A ACL só permite publicar nos próprios
+        tópicos e ler o próprio /comando.
   messages:
     telemetria:
       name: telemetria

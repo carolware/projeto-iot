@@ -1,0 +1,7 @@
+{
+  "name": "sentinela-dispositivo-ts",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node dispositivo.ts" },
+  "dependencies": { "mqtt": "5.10.1" }
+}

@@ -141,7 +141,9 @@ def criar_app(
 
     # Contratos publicados por URL (RF-INT-01)
     raiz = diretorio_contratos()
-    publicados = {SCHEMA_V1, "asyncapi.yaml"} | {f"exemplos/{p.name}" for p in (raiz / "exemplos").glob("*.json")}
+    publicados = {SCHEMA_V1, "asyncapi.yaml", "CHANGELOG.md"} | {
+        f"exemplos/{p.name}" for p in (raiz / "exemplos").glob("*.json")
+    }
 
     @app.get("/contratos/{caminho:path}", tags=["Contratos"])
     def contrato(caminho: str):
