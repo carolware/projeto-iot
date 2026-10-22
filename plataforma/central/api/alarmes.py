@@ -31,6 +31,7 @@ class Alarme(BaseModel):
     regra: str | None
     dispositivo: str | None
     site: str | None
+    site_nome: str | None = None
     dominio: str | None
     ocorrido_em: datetime
     reconhecido_em: datetime | None

@@ -250,11 +250,11 @@ def test_revogado_sai_do_arquivo_do_broker(cliente, banco):
 
 
 def test_acesso_do_broker_central(banco):
-    servicos = servicos_da_central({"central": "s1", "ponte": "s2", "painel": "", "simulacao": "s4"}, "legado/base")
+    servicos = servicos_da_central({"central": "s1", "simulacao": "", "desconhecido": "x"})
     senhas_txt, acl = arquivos_central(banco, servicos)
     senhas = _senhas(senhas_txt)
-    assert {"central", "ponte", "simulacao", "borda-goias", "borda-tocantins"} <= senhas.keys()
-    assert "painel" not in senhas  # sem senha configurada = sem usuário
+    assert {"central", "borda-goias", "borda-tocantins"} <= senhas.keys()
+    assert "simulacao" not in senhas and "desconhecido" not in senhas  # sem senha / sem ACL = sem usuário
     assert verificar_senha("s1", senhas["central"])
     # a bridge de cada borda só recebe comandos dos sites dela
     bridge = acl.split("user borda-goias\n")[1].split("\n\n")[0]

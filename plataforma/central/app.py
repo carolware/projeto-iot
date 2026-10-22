@@ -13,17 +13,19 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from central.acesso_mqtt import GestorAcesso, servicos_da_central
 from central.acoes import AcaoComando, AcaoNotificar, AcaoPublicar, AcaoWebhook, ExecutorAcoes, Publicador
-from central.api import alarmes, catalogo, dispositivos, ingestao, operacao, regras
+from central.api import alarmes, catalogo, dispositivos, ingestao, operacao, painel, regras
 from central.api.seguranca import Autenticador
 from central.config import Configuracao, configuracao
 from central.db import criar_engine
 from central.motor import MotorRegras
 from central.mqtt import AdaptadorMqtt, BarramentoMqtt
 from central.repositorios import CatalogoPostgres, FilaInvalidasPostgres, RepositorioPostgres
+from central.tempo_real import HubTempoReal
 from nucleo.credenciais import hash_senha
 from nucleo.ingestao import BarramentoComposto, PipelineIngestao
 from nucleo.validacao import SCHEMA_V1, diretorio_contratos
@@ -54,7 +56,13 @@ def criar_app(
     async def ciclo_de_vida(app: FastAPI):
         engine = criar_engine(cfg.database_url)
         mqtt = AdaptadorMqtt(cfg.mqtt_broker, cfg.mqtt_port, cfg.mqtt_client_id) if cfg.mqtt_ingestao else None
-        publicador = publicar or (_publicador_mqtt(mqtt) if mqtt else (lambda topico, carga: None))
+        hub = HubTempoReal()
+        publicar_externo = publicar or (_publicador_mqtt(mqtt) if mqtt else (lambda topico, carga: None))
+
+        def publicador(topico: str, carga: dict) -> None:
+            publicar_externo(topico, carga)
+            hub.de_topico(topico, carga)  # alarmes também vão para os painéis conectados
+
         executor = ExecutorAcoes(
             engine,
             {
@@ -66,13 +74,14 @@ def criar_app(
             | (estrategias or {}),
         )
         motor = MotorRegras(engine, executor, publicador)
-        servicos = servicos_da_central(cfg.mqtt_senhas_servicos, cfg.mqtt_topico_legado)
+        servicos = servicos_da_central(cfg.mqtt_senhas_servicos)
         simulacao = cfg.mqtt_senhas_servicos.get("simulacao")
         acesso = GestorAcesso(engine, cfg.mqtt_acesso_dir, servicos, hash_senha(simulacao) if simulacao else None)
         acesso.atualizar()  # antes de conectar: o próprio usuário "central" precisa estar no broker
         app.state.engine = engine
         app.state.publicar = publicador
         app.state.motor = motor
+        app.state.hub = hub
         app.state.acesso = acesso
         app.state.autenticador = autenticador or Autenticador(
             cfg.oidc_emissor, cfg.oidc_audiencia, jwks_url=cfg.oidc_jwks_url
@@ -81,7 +90,8 @@ def criar_app(
             CatalogoPostgres(engine),
             RepositorioPostgres(engine),
             FilaInvalidasPostgres(engine),
-            BarramentoComposto(*([BarramentoMqtt(mqtt.cliente)] if mqtt else []), motor),
+            # hub antes do motor: o painel recebe a leitura antes do alarme que ela provoca
+            BarramentoComposto(*([BarramentoMqtt(mqtt.cliente)] if mqtt else []), hub, motor),
         )
         if motor_em_segundo_plano:
             motor.iniciar()
@@ -100,7 +110,14 @@ def criar_app(
         "mensagem canônica em /contratos/mensagem-canonica.v1.schema.json.",
         lifespan=ciclo_de_vida,
     )
-    for modulo in (ingestao, catalogo, dispositivos, regras, alarmes, operacao):
+    # painel web em outra origem (RF-APP-06); só as origens configuradas
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cfg.cors_origens,
+        allow_methods=["*"],
+        allow_headers=["Authorization", "Content-Type", "X-Inquilino"],
+    )
+    for modulo in (ingestao, catalogo, dispositivos, regras, alarmes, operacao, painel):
         app.include_router(modulo.router)
 
     # Contratos publicados por URL (RF-INT-01)

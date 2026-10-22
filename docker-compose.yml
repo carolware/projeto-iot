@@ -45,7 +45,6 @@ services:
     <<: *mosquitto
     ports:
       - "8883:8883"   # MQTT/TLS (dispositivos diretos, bridges das bordas, scripts locais)
-      - "9001:9001"   # MQTT/WebSocket do painel antigo (TEMPORÁRIO até a A5)
     volumes:
       - ./plataforma/infra/mosquitto/iniciar.sh:/iniciar.sh:ro
       - ./plataforma/infra/mosquitto/central/mosquitto.conf.modelo:/mosquitto/config/mosquitto.conf.modelo:ro
@@ -105,10 +104,7 @@ services:
       MQTT_ACESSO_DIR: /acesso
       # senhas dos usuários de serviço do broker (a central grava só os hashes)
       MQTT_SENHA_CENTRAL: ${MQTT_SENHA_CENTRAL}
-      MQTT_SENHA_PONTE: ${MQTT_SENHA_PONTE:?defina no .env}
-      MQTT_SENHA_PAINEL: ${MQTT_SENHA_PAINEL:?defina no .env}
       MQTT_SENHA_SIMULACAO: ${MQTT_SENHA_SIMULACAO:?defina no .env}
-      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-sentinela-iot-2026-joao-carol/monitoramento-br}
       SEGREDO_PROVISIONAMENTO: ${SEGREDO_PROVISIONAMENTO:?defina no .env}
       CREDENCIAL_BORDA_TOCANTINS: ${CREDENCIAL_BORDA_TOCANTINS:?defina no .env}
       CREDENCIAL_BORDA_GOIAS: ${CREDENCIAL_BORDA_GOIAS:?defina no .env}
@@ -311,33 +307,17 @@ services:
     restart: unless-stopped
 
   # ── Aplicação ──────────────────────────────────────────────────────────────
-  # TEMPORÁRIO até a etapa A5: traduz o barramento novo para os tópicos do painel antigo
-  ponte-front:
-    <<: *plataforma
-    command: ["python", "-m", "legado.ponte_front"]
-    env_file: .env
-    environment:
-      <<: *tls
-      MQTT_BROKER: mosquitto-central
-      MQTT_USUARIO: ponte
-      MQTT_SENHA: ${MQTT_SENHA_PONTE}
-    volumes:
-      - ./plataforma/infra/pki/gerado:/pki:ro
-    depends_on: [mosquitto-central]
-    networks: [nuvem]
-
   front:
     build:
       context: ./front
       dockerfile: Dockerfile
       args:
-        VITE_MQTT_URL: ${VITE_MQTT_URL:-ws://localhost:9001}
-        # usuário "painel": só lê os tópicos legados (TEMPORÁRIO até a A5 levar o front para OIDC + API)
-        VITE_MQTT_USUARIO: painel
-        VITE_MQTT_SENHA: ${MQTT_SENHA_PAINEL}
+        # o navegador fala com a API e o Keycloak (OIDC); nada de MQTT no front
+        VITE_API_URL: http://localhost:8000
+        VITE_KEYCLOAK_URL: http://localhost:8080
     ports:
       - "3000:3000"
-    depends_on: [mosquitto-central]
+    depends_on: [central, keycloak]
     networks: [nuvem]
     restart: unless-stopped
 

@@ -23,7 +23,7 @@ class Configuracao:
     # broker central: onde gravar senhas/ACL e senhas dos usuários de serviço
     mqtt_acesso_dir: str | None = None
     mqtt_senhas_servicos: dict[str, str] = field(default_factory=dict)
-    mqtt_topico_legado: str = "sentinela-iot-2026-joao-carol/monitoramento-br"
+    cors_origens: list[str] = field(default_factory=lambda: ["http://localhost:3000"])
 
 
 def _url_padrao() -> str:
@@ -48,8 +48,6 @@ def configuracao() -> Configuracao:
         oidc_jwks_url=os.getenv("OIDC_JWKS_URL") or f"{emissor}/protocol/openid-connect/certs",
         oidc_audiencia=os.getenv("OIDC_AUDIENCIA", "sentinela-api"),
         mqtt_acesso_dir=os.getenv("MQTT_ACESSO_DIR") or None,
-        mqtt_senhas_servicos={
-            nome: os.getenv(f"MQTT_SENHA_{nome.upper()}", "") for nome in ("central", "ponte", "painel", "simulacao")
-        },
-        mqtt_topico_legado=os.getenv("MQTT_TOPIC_BASE", "sentinela-iot-2026-joao-carol/monitoramento-br"),
+        mqtt_senhas_servicos={nome: os.getenv(f"MQTT_SENHA_{nome.upper()}", "") for nome in ("central", "simulacao")},
+        cors_origens=[o.strip() for o in os.getenv("CORS_ORIGENS", "http://localhost:3000").split(",") if o.strip()],
     )

@@ -64,7 +64,7 @@ No contexto da disciplina de Internet das Coisas, o presente trabalho propõe um
 | **TanStack Start/Router** | Aplicação web | Estrutura rotas, renderização no servidor (SSR), hidratação e build da aplicação. |
 | **Vite 8** | Ferramentas frontend | Executa o servidor de desenvolvimento e gera os bundles de produção. |
 | **Tailwind CSS 4** | Apresentação | Define layout responsivo, cores, tipografia e estados visuais. |
-| **mqtt.js** | Mensageria no navegador | Conecta o dashboard ao Mosquitto por MQTT sobre WebSocket (`ws://localhost:9001`). |
+| **keycloak-js** | Identidade no navegador | Login OIDC (código + PKCE) e renovação do token usado na API e no tempo real. |
 | **Leaflet + React-Leaflet 5** | Geovisualização | Renderiza o mapa interativo, marcadores, popups, zoom e modo expandido. |
 | **OpenStreetMap + CARTO** | Cartografia | Fornecem os tiles e a base geográfica exibida pelo Leaflet. |
 | **Radix UI** | Componentes auxiliares | Disponibiliza primitivas acessíveis instaladas no frontend; o dashboard atual utiliza principalmente componentes próprios. |
@@ -204,9 +204,7 @@ Um mecanismo de **cooldown por zona × ação** (padrão: 30 s) previne o dispar
 
 ### 3.4 Dashboard SENTINELA (Frontend)
 
-Interface web desenvolvida com **React 19**, **TypeScript**, **TanStack Router/Start**, **Vite 8** e **Tailwind CSS v4**. A geovisualização utiliza **Leaflet/React-Leaflet 5**, e a integração em tempo real usa **mqtt.js** sobre WebSocket seguro. O projeto preserva configuração compatível com Lovable, mas pode ser executado e implantado independentemente da plataforma.
-
-O dashboard opera por padrão em modo real: o módulo `iot.ts` estabelece uma conexão MQTT sobre WebSocket seguro (WSS), subscreve os tópicos de telemetria, alertas e resultados orbitais FIRMS e atualiza a interface imediatamente. O módulo `sim.ts` permanece disponível como modo de demonstração independente; para utilizá-lo, defina `VITE_DATA_MODE=sim` em `front/.env`.
+Interface web desenvolvida com **React 19**, **TypeScript**, **TanStack Router/Start**, **Vite 8** e **Tailwind CSS v4**. A geovisualização utiliza **Leaflet/React-Leaflet 5** (mapa base Esri). O login é feito no **Keycloak** (OIDC com PKCE, `keycloak-js`); os dados vêm da API da central e as atualizações ao vivo do WebSocket `/api/v1/tempo-real`, filtrado pelo inquilino do usuário. O navegador não fala MQTT e não calcula risco: a classificação vem da central, pelas regras configuradas.
 
 **Funcionalidades do dashboard:**
 - Visão geral de todas as zonas monitoradas com níveis de risco em tempo real
@@ -298,11 +296,11 @@ A topologia reproduz as três camadas (edge → fog → cloud):
 Novo Progresso (PA) e Mirador (MA) não têm nó de borda: as estações delas
 (`estacoes-diretas`) falam direto com a central, como um local com boa conexão.
 
-O front fica em `http://localhost:3000` e fala com o broker em
-`ws://localhost:9001`. Enquanto a etapa A5 não migra o painel, o serviço
-`ponte-front` traduz o barramento novo para os tópicos antigos que ele usa.
-As variáveis `VITE_*` são compiladas no build da imagem — se mudar alguma,
-recrie a imagem do front (`docker compose up -d --build front`).
+O painel fica em `http://localhost:3000`: login pelo Keycloak (usuários na
+seção 5.3.3), dados pela API da central e atualização ao vivo pelo WebSocket
+`/api/v1/tempo-real`. O navegador não fala MQTT. As variáveis `VITE_*` são
+compiladas no build da imagem — se mudar alguma, recrie a imagem do front
+(`docker compose up -d --build front`).
 
 Para rodar um componente fora do Docker (ex.: depurar a borda), instale o
 pacote (`pip install -r plataforma/requirements.txt -e plataforma`) e rode a
@@ -388,10 +386,8 @@ Usuários de demonstração (senha `sentinela`, **só desenvolvimento**):
 grant) existe só para scripts; o painel usa o cliente `painel` (PKCE).
 
 Os segredos de desenvolvimento ficam no `.env` (modelo em `.env.example`;
-troque todos fora da sua máquina). O WebSocket 9001 do painel antigo é
-autenticado (usuário `painel`, só leitura dos tópicos legados) e sem TLS —
-provisório até a etapa A5. Observação: o Mosquitto 2.0 confirma (SUBACK) a
-assinatura de um tópico proibido, mas não entrega nenhuma mensagem dele.
+troque todos fora da sua máquina). Observação: o Mosquitto 2.0 confirma
+(SUBACK) a assinatura de um tópico proibido, mas não entrega nenhuma mensagem dele.
 
 Testes (unidade + integração; os de integração usam o TimescaleDB do compose
 num banco descartável `sentinela_teste` e são pulados se ele estiver fora do ar):
@@ -404,12 +400,21 @@ cd plataforma && pip install -r requirements-dev.txt -e . && pytest --cov
 
 ```bash
 cd front
-npm install          # ou: bun install
-npm run dev
-# Acesse o endereço indicado pelo Vite (neste projeto, normalmente http://localhost:8080)
+npm install
+npm run dev -- --port 3000   # a porta 3000 é a cadastrada no Keycloak (cliente "painel")
 ```
 
-O frontend possui configuração própria em `front/.env`. O navegador não usa a porta MQTT/TLS 8883; ele se conecta pelo WebSocket definido em `VITE_MQTT_URL`, com o usuário `VITE_MQTT_USUARIO`/`VITE_MQTT_SENHA` (provisório até a A5). O valor de `VITE_MQTT_TOPIC_BASE` deve ser idêntico ao `MQTT_TOPIC_BASE` do `.env` localizado na raiz.
+Configuração em `front/.env` (modelo em `front/.env.example`): `VITE_API_URL`
+(central), `VITE_KEYCLOAK_URL`, `VITE_KEYCLOAK_REALM` e `VITE_KEYCLOAK_CLIENTE`.
+
+| Tela | O que mostra | Quem vê |
+|---|---|---|
+| **Painel** (rural) | Zonas com leituras atuais, risco classificado pelas regras do inquilino, mapa, feed ao vivo, comandos à brigada | todos; comandos para operador/gestor |
+| **Painel** (prefeitura) | Alertas recebidos pelas assinaturas, terminais de alerta e histórico | inquilinos urbanos |
+| **Alarmes** | Ativo → reconhecido → resolvido, com ações executadas, comandos e entregas às prefeituras | todos; reconhecer/resolver para operador/gestor |
+| **Eventos** | "Logs por região": eventos dos dispositivos e alarmes por local | todos |
+| **Bordas** | Fila pendente e há quanto tempo cada nó de borda está sem sincronizar | inquilinos rurais |
+| **Cadastro** | Domínio, dispositivo (credencial mostrada uma vez), regra e assinatura | gestor (dispositivo também integrador) |
 
 ### 5.5 Variáveis de Ambiente
 
@@ -486,7 +491,7 @@ As zonas monitoradas cobrem localidades de Goiás, Tocantins, Pará e Maranhão:
 | Mateiros          | TO | -10.5464  | -46.4168  | TO-MA-08  | Destaque nacional de área queimada em 2025 |
 | Lagoa da Confusão | TO | -10.7906  | -49.6199  | TO-LC-09  | Destaque nacional de área queimada em 2025 |
 
-A seleção dos três destaques adicionais usa o recorte de **área queimada municipal em 2025** divulgado pelo MapBiomas Fogo, e não uma afirmação permanente sobre a quantidade de focos. Rankings variam conforme período e indicador. Como “Amazônia” é uma região extensa, Novo Progresso (PA) permanece como ponto representativo. Para alterar coordenadas, edite `plataforma/simuladores/zonas.py` e o seed da central (`plataforma/central/seeds/seed.py`); o front ainda tem cópias em `iot.ts` e `sim.ts` até a etapa A5.
+A seleção dos três destaques adicionais usa o recorte de **área queimada municipal em 2025** divulgado pelo MapBiomas Fogo, e não uma afirmação permanente sobre a quantidade de focos. Rankings variam conforme período e indicador. Como “Amazônia” é uma região extensa, Novo Progresso (PA) permanece como ponto representativo. Para alterar coordenadas, edite `plataforma/simuladores/zonas.py` e o seed da central (`plataforma/central/seeds/seed.py`); o front recebe as zonas da API (sem cópias locais).
 
 ---
 
@@ -541,7 +546,6 @@ projeto-iot/
 │   │   ├── terminal_go/          # Terminal de alerta das prefeituras (Go)
 │   │   ├── demo/                 # Cadastro do domínio urbano e corte de link
 │   │   └── mock_incendio.py      # CLI para ligar/desligar o mock de incêndio (ver 5.6)
-│   ├── legado/ponte_front.py # TEMPORÁRIO: barramento novo → tópicos do painel antigo
 │   ├── infra/mosquitto/      # Brokers da central e das bordas (com bridge)
 │   ├── tests/                # Testes do núcleo e de contrato (pytest)
 │   ├── Dockerfile            # Imagem Python compartilhada (estação/gateway/atuador)
@@ -564,9 +568,11 @@ projeto-iot/
     │   │       ├── FireMap.tsx        # Wrapper client-only do mapa
     │   │       ├── LeafletMapCore.tsx # Mapa Leaflet interativo
     │   │       └── StatusDot.tsx      # Indicador de status animado
+    │   ├── routes/                # index (painel rural/prefeitura), alarmes, eventos, bordas, cadastro
     │   └── lib/
-    │       ├── iot.ts              # MQTT WebSocket em tempo real
-    │       └── sim.ts              # Fallback de demonstração
+    │       ├── auth.tsx            # Login Keycloak (OIDC/PKCE) e chamadas autenticadas à API
+    │       ├── iot.ts              # Painel da API + WebSocket de tempo real da central
+    │       └── tipos.ts            # Tipos do painel e da API
     └── package.json
 ```
 

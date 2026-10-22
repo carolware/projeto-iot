@@ -38,8 +38,8 @@ jobs:
         run: pip install -r requirements-dev.txt -e .
       - name: Lint (ruff)
         run: |
-          ruff check nucleo central borda legado tests
-          ruff format --check nucleo central borda legado tests
+          ruff check nucleo central borda tests
+          ruff format --check nucleo central borda tests
       - name: Testes (unidade + integração com TimescaleDB) e cobertura (RNF-15 ≥ 70%)
         run: pytest --cov --cov-report=term-missing --cov-fail-under=70
 
@@ -68,3 +68,20 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test ./...
+
+  front:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: front
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+      - name: Instalar e gerar o build do painel
+        run: |
+          npm ci
+          npm run build

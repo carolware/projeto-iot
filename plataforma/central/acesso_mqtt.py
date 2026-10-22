@@ -36,7 +36,7 @@ class Servico:
     acl: tuple[str, ...]
 
 
-def servicos_da_central(senhas: dict[str, str], topico_legado: str) -> list[Servico]:
+def servicos_da_central(senhas: dict[str, str]) -> list[Servico]:
     """Usuários de serviço do broker central (senhas vindas do ambiente, guardadas só como hash)."""
     acls = {
         "central": (
@@ -46,15 +46,6 @@ def servicos_da_central(senhas: dict[str, str], topico_legado: str) -> list[Serv
             "topic write +/+/+/+/comando",
             "topic readwrite plataforma/#",
         ),
-        # TEMPORÁRIOS até a etapa A5 (painel antigo)
-        "ponte": (
-            "topic read plataforma/telemetria/#",
-            "topic read plataforma/evento/#",
-            "topic read plataforma/alarme/#",
-            f"topic readwrite {topico_legado}/#",
-            "topic write +/+/+/+/comando",
-        ),
-        "painel": (f"topic read {topico_legado}/#", f"topic write {topico_legado}/+/atuador/alerta"),
         "simulacao": (f"topic write {TOPICO_SIMULACAO}",),
     }
     return [Servico(nome, hash_senha(senha), acls[nome]) for nome, senha in senhas.items() if senha and nome in acls]

@@ -21,9 +21,3 @@ cafile /pki/ca.crt
 certfile /pki/mosquitto-central.crt
 keyfile /pki/mosquitto-central.key
 tls_version tlsv1.2
-
-# WebSocket do painel antigo (TEMPORÁRIO até a etapa A5): autenticado e só
-# leitura de tópicos legados; sem TLS porque o navegador não confiaria na CA
-# própria em localhost.
-listener 9001
-protocol websockets

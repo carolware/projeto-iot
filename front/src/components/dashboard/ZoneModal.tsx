@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { RISK_LABEL, type FeedEvent, type SimState, type Zone } from "@/lib/sim";
+import { RISK_LABEL, type FeedEvent, type SimState, type Zone } from "@/lib/tipos";
 
 const RISK_BADGE: Record<string, string> = {
   baixo: "bg-ok/15 text-ok",

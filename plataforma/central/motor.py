@@ -47,7 +47,12 @@ log = logging.getLogger("central.motor")
 ATRASO_MAX = timedelta(minutes=5)  # leitura mais velha que isso não abre alarme "atual" (RF-ING-04)
 CACHE_REGRAS_S = 5.0
 CICLO_AGENDADOR_S = 5.0
-VERIFICAR_RETORNO_S = 5.0  # no máximo uma consulta "voltou a enviar?" por dispositivo nesse intervalo
+VERIFICAR_RETORNO_S = 5.0
+ROTULO_SEVERIDADE = {
+    "medio": "médio",
+    "alto": "alto",
+    "critico": "crítico",
+}  # no máximo uma consulta "voltou a enviar?" por dispositivo nesse intervalo
 
 
 @dataclass(frozen=True)
@@ -293,6 +298,13 @@ class MotorRegras:
         )
         if cfg.get("perfil"):
             consulta = consulta.where(p.c.slug == cfg["perfil"])
+        if regra.id:
+            # silêncio contínuo é UMA ocorrência: quem já tem o alarme aberto fica de fora
+            a = db.alarme
+            ja_aberto = select(a.c.dispositivo_id).where(
+                a.c.regra_id == uuid.UUID(regra.id), a.c.estado != "resolvido", a.c.origem_alarme_id.is_(None)
+            )
+            consulta = consulta.where(d.c.id.not_in(ja_aberto))
         with self.engine.connect() as conexao:
             calados = conexao.execute(consulta).all()
         novos = 0
@@ -463,8 +475,10 @@ class MotorRegras:
             distancia = distancia_km(ass["lat"], ass["lon"], alarme["lat"], alarme["lon"])
             if distancia > ass["raio_km"] or not severidade_atinge(alarme["severidade"], ass["severidade_min"]):
                 continue
+            dominio = (alarme.get("dominio_nome") or alarme["dominio"]).lower()
+            local = alarme.get("site_nome") or alarme["site"]
             resumo = (
-                f"Risco {alarme['severidade']} de {alarme['dominio']} em {alarme['site']} "
+                f"Risco {ROTULO_SEVERIDADE[alarme['severidade']]} de {dominio} em {local} "
                 f"a {distancia:.0f} km ({ass['nome'] or 'área monitorada'})"
             )
             dados = {
@@ -654,9 +668,11 @@ def consulta_alarmes():
             r.c.nome.label("regra"),
             d.c.slug.label("dispositivo"),
             s.c.slug.label("site"),
+            s.c.nome.label("site_nome"),
             s.c.lat,
             s.c.lon,
             dom.c.slug.label("dominio"),
+            dom.c.nome.label("dominio_nome"),
             a.c.ocorrido_em,
             a.c.reconhecido_em,
             a.c.reconhecido_por,

@@ -38,6 +38,7 @@ PREFEITURAS = {
     "pirenopolis": (-15.8558, -48.9597),
     "jaragua": (-15.7529, -49.3344),
 }
+NOMES = {"anapolis": "Anápolis", "formosa": "Formosa", "pirenopolis": "Pirenópolis", "jaragua": "Jaraguá"}
 RAIO_KM = 80
 TERMINAIS = {"defesa-civil": "dc", "bombeiros": "bm"}
 
@@ -118,7 +119,7 @@ def main() -> None:
             print("   assinatura incendio: já existia")
         else:
             print(f"   assinatura incendio ({RAIO_KM} km):", postar(central, "/api/v1/assinaturas", token, {
-                "nome": f"Incêndios no entorno de {cidade.title()}",
+                "nome": f"Incêndios no entorno de {NOMES[cidade]}",
                 "dominio": "incendio",
                 "lat": lat,
                 "lon": lon,

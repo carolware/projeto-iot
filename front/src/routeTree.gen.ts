@@ -10,33 +10,73 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AlarmesRouteImport } from './routes/alarmes'
+import { Route as BordasRouteImport } from './routes/bordas'
+import { Route as CadastroRouteImport } from './routes/cadastro'
+import { Route as EventosRouteImport } from './routes/eventos'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AlarmesRoute = AlarmesRouteImport.update({
+  id: '/alarmes',
+  path: '/alarmes',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BordasRoute = BordasRouteImport.update({
+  id: '/bordas',
+  path: '/bordas',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CadastroRoute = CadastroRouteImport.update({
+  id: '/cadastro',
+  path: '/cadastro',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EventosRoute = EventosRouteImport.update({
+  id: '/eventos',
+  path: '/eventos',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/alarmes': typeof AlarmesRoute
+  '/bordas': typeof BordasRoute
+  '/cadastro': typeof CadastroRoute
+  '/eventos': typeof EventosRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/alarmes': typeof AlarmesRoute
+  '/bordas': typeof BordasRoute
+  '/cadastro': typeof CadastroRoute
+  '/eventos': typeof EventosRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/alarmes': typeof AlarmesRoute
+  '/bordas': typeof BordasRoute
+  '/cadastro': typeof CadastroRoute
+  '/eventos': typeof EventosRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/alarmes' | '/bordas' | '/cadastro' | '/eventos'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/alarmes' | '/bordas' | '/cadastro' | '/eventos'
+  id: '__root__' | '/' | '/alarmes' | '/bordas' | '/cadastro' | '/eventos'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AlarmesRoute: typeof AlarmesRoute
+  BordasRoute: typeof BordasRoute
+  CadastroRoute: typeof CadastroRoute
+  EventosRoute: typeof EventosRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +88,43 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/alarmes': {
+      id: '/alarmes'
+      path: '/alarmes'
+      fullPath: '/alarmes'
+      preLoaderRoute: typeof AlarmesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/bordas': {
+      id: '/bordas'
+      path: '/bordas'
+      fullPath: '/bordas'
+      preLoaderRoute: typeof BordasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cadastro': {
+      id: '/cadastro'
+      path: '/cadastro'
+      fullPath: '/cadastro'
+      preLoaderRoute: typeof CadastroRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/eventos': {
+      id: '/eventos'
+      path: '/eventos'
+      fullPath: '/eventos'
+      preLoaderRoute: typeof EventosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AlarmesRoute: AlarmesRoute,
+  BordasRoute: BordasRoute,
+  CadastroRoute: CadastroRoute,
+  EventosRoute: EventosRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

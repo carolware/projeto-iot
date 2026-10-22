@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { RISK_LABEL, type Zone } from "@/lib/sim";
+import { RISK_LABEL, type Zone } from "@/lib/tipos";
 import { StatusDot } from "./StatusDot";
 
 /**
@@ -103,7 +103,7 @@ export function ZoneHero({ zone, index, onSelect }: { zone: Zone; index: number;
             </span>
           </div>
           <div className="mt-1 font-mono text-[10px] text-faint">
-            SENSOR {zone.sensorId} · {zone.coords} · ALT 1180m
+            SENSOR {zone.sensorId} · {zone.coords}
           </div>
         </div>
         <div className="text-right font-mono text-[10px] text-faint leading-relaxed">

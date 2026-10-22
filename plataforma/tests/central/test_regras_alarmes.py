@@ -301,6 +301,8 @@ def test_regra_de_ausencia_de_dados(cliente):
     [alarme] = abertos(cliente, "est-calada-01")
     assert alarme["regra"] == "estacao-sem-dados" and alarme["severidade"] == "medio"
     assert datetime.fromisoformat(alarme["ocorrido_em"]) == ultimo + timedelta(seconds=300)
+    cliente.app.state.motor.verificar_ausencias()  # silêncio contínuo não vira nova ocorrência
+    assert abertos(cliente, "est-calada-01")[0]["ocorrencias"] == 1
 
     enviar(cliente, leitura("est-calada-01"))
     assert abertos(cliente, "est-calada-01") == []
@@ -461,7 +463,8 @@ def test_alarme_da_brigada_chega_ao_terminal_da_prefeitura(cliente, prefeitura, 
 
     [entrega] = cliente.get("/api/v1/alarmes", params={"abertos": True}, headers=ANAPOLIS).json()["itens"]
     assert entrega["origem_alarme_id"] == origem["id"] and entrega["severidade"] == "critico"
-    assert "pirenopolis" in entrega["dados"]["resumo"] and entrega["dados"]["distancia_km"] < 80
+    assert entrega["dados"]["resumo"].startswith("Risco crítico de incêndio florestal em Pirenópolis (GO)")
+    assert entrega["dados"]["distancia_km"] < 80
     assert entrega["dispositivo"] is None  # a prefeitura não vê o dispositivo da brigada…
     assert cliente.get(f"/api/v1/alarmes/{origem['id']}", headers=ANAPOLIS).status_code == 404  # …nem o alarme dela
 
