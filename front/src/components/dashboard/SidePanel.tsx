@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { sendIotCommand, type FeedEvent, type SimState, type Zone } from "@/lib/iot";
+import { type FeedEvent, type SimState, type Zone } from "@/lib/iot";
 import { StatusDot } from "./StatusDot";
 import { FireMap } from "./FireMap";
 
@@ -89,45 +89,77 @@ function AlertsFeed({ feed }: { feed: FeedEvent[] }) {
   );
 }
 
-function MqttCommands({ zone }: { zone: Zone | undefined }) {
+function Comandos({
+  zones,
+  sugerida,
+  comandar,
+  permitido,
+}: {
+  zones: Zone[];
+  sugerida: Zone | undefined;
+  comandar: SimState["comandar"];
+  permitido: boolean;
+}) {
   const [open, setOpen] = useState(true);
-  const target = zone?.id ?? "serra-leste";
+  const [escolhida, setEscolhida] = useState<string | null>(null);
+  const alvo = escolhida ?? sugerida?.id ?? zones[0]?.id;
+  const atuador = alvo ? `atuador-${alvo}-01` : "—";
+  const botao = "rounded border py-2 font-mono text-[10px] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed";
   return (
     <section
       className="rounded-md border border-hair bg-surface p-3.5"
       style={{ animation: "enter .5s cubic-bezier(0.32,0.72,0,1) both", animationDelay: "360ms" }}
     >
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] tracking-[0.2em] text-faint">04 — COMANDOS MQTT</span>
+        <span className="font-mono text-[10px] tracking-[0.2em] text-faint">04 — COMANDOS À BRIGADA</span>
         <CollapseToggle open={open} onClick={() => setOpen((o) => !o)} />
       </div>
       {open && (
         <>
-          <div className="mt-3 rounded bg-ink/70 border border-hair px-2.5 py-2 font-mono text-[11px] break-all">
-            <span className="text-teal">MQTT&gt;</span>{" "}
-            <span className="text-fg">{zone?.topic.replace("/sensor/+", "/atuador/alerta")}</span>{" "}
-            <span className="text-faint">{'{"risco":"critico","acao":"acionar_brigada"}'}</span>
+          <label className="mt-3 block font-mono text-[10px] text-faint">
+            ZONA
+            <select
+              value={alvo ?? ""}
+              onChange={(e) => setEscolhida(e.target.value)}
+              className="mt-1 w-full rounded border border-hair bg-ink px-2 py-1.5 text-fg"
+            >
+              {zones.map((z) => (
+                <option key={z.id} value={z.id}>
+                  {z.name} · {z.risk}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="mt-2 rounded bg-ink/70 border border-hair px-2.5 py-2 font-mono text-[11px] break-all">
+            <span className="text-teal">API&gt;</span>{" "}
+            <span className="text-fg">POST /api/v1/dispositivos/{atuador}/comandos</span>
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2">
             <button
-              onClick={() => sendIotCommand(target, "acionar_brigada")}
-              className="rounded border border-ember/50 bg-ember/10 hover:bg-ember/20 py-2 font-mono text-[10px] text-ember transition-colors cursor-pointer"
+              disabled={!permitido || !alvo}
+              onClick={() => alvo && comandar(alvo, "acionar_brigada")}
+              className={`${botao} border-ember/50 bg-ember/10 hover:bg-ember/20 text-ember`}
             >
               ACIONAR
             </button>
             <button
-              onClick={() => sendIotCommand(target, "reforcar_monitoramento")}
-              className="rounded border border-hair bg-surface-2 hover:bg-surface py-2 font-mono text-[10px] text-fg transition-colors cursor-pointer"
+              disabled={!permitido || !alvo}
+              onClick={() => alvo && comandar(alvo, "reforcar_monitoramento")}
+              className={`${botao} border-hair bg-surface-2 hover:bg-surface text-fg`}
             >
               REFORÇAR
             </button>
             <button
-              onClick={() => sendIotCommand(target, "silenciar_alerta")}
-              className="rounded border border-hair bg-surface-2 hover:bg-surface py-2 font-mono text-[10px] text-dim transition-colors cursor-pointer"
+              disabled={!permitido || !alvo}
+              onClick={() => alvo && comandar(alvo, "silenciar_alerta")}
+              className={`${botao} border-hair bg-surface-2 hover:bg-surface text-dim`}
             >
               SILENCIAR
             </button>
           </div>
+          {!permitido && (
+            <div className="mt-2 font-mono text-[9px] text-faint">Seu papel não permite enviar comandos (operador ou gestor).</div>
+          )}
         </>
       )}
     </section>
@@ -172,13 +204,13 @@ function EventLog({ log }: { log: string[] }) {
   );
 }
 
-export function SidePanel({ state }: { state: SimState }) {
+export function SidePanel({ state, podeComandar }: { state: SimState; podeComandar: boolean }) {
   const hottest = state.zones.find((z) => z.risk === "critico") ?? state.zones.find((z) => z.risk === "alto");
   return (
     <aside className="lg:sticky lg:top-[57px] flex flex-col gap-4">
       <MapPanel zones={state.zones} hotZone={hottest} />
       <AlertsFeed feed={state.feed} />
-      <MqttCommands zone={hottest} />
+      <Comandos zones={state.zones} sugerida={hottest} comandar={state.comandar} permitido={podeComandar} />
       <EventLog log={state.log} />
     </aside>
   );

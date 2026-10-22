@@ -13,3 +13,12 @@ __pycache__/
 # editor
 .vscode/
 .idea/
+
+# testes / lint
+.pytest_cache/
+.coverage
+.ruff_cache/
+*.egg-info/
+
+# PKI gerada localmente (chave da CA nunca vai para o git)
+plataforma/infra/pki/gerado/

@@ -1,530 +1,177 @@
-# SENTINELA — Sistema IoT de Monitoramento e Alerta de Incêndios Florestais
+# SENTINELA — Plataforma IoT de detecção e alerta de incêndios
 
-> Projeto de Disciplina — Internet das Coisas (IoT)
-
----
+> Projeto da disciplina Internet das Coisas — UniEVANGÉLICA, 2026.
+> 2ª entrega: *Documento de Requisitos — Plataforma IoT Integrada v2.0*
+> (`Documento de Requisitos - Plataforma IoT Integrada.pdf`, na raiz).
 
 ## Resumo
 
-Este projeto apresenta a concepção, implementação e integração de uma arquitetura IoT distribuída para o monitoramento de incêndios florestais em tempo quase real. O sistema combina dados meteorológicos atuais da Open-Meteo, detecções orbitais de focos de calor da NASA FIRMS (*Fire Information for Resource Management System*), comunicação assíncrona via protocolo MQTT e raciocínio baseado em regras no gateway. A solução é complementada pelo dashboard web reativo **SENTINELA**, desenvolvido com React/TanStack Start. A arquitetura implementa o paradigma *edge-to-cloud* com cache das fontes externas e processamento contínuo da telemetria.
+O Sentinela é uma plataforma IoT que integra dois cenários em torno do mesmo
+problema, os incêndios no Cerrado:
 
----
+- **Rural:** estações de detecção em fazendas e áreas de preservação de Goiás e
+  Tocantins, atrás de **nós de borda** que decidem sozinhos e guardam tudo
+  quando a internet cai.
+- **Urbano:** **terminais de alerta** nas prefeituras, Defesa Civil e bombeiros,
+  que recebem os incêndios próximos da cidade e devolvem o reconhecimento do
+  operador.
 
-## 1. Introdução e Motivação
+A arquitetura é **edge → fog → cloud**. Todas as mensagens seguem um
+**contrato canônico** versionado (JSON Schema + AsyncAPI) e trafegam por
+**MQTT sobre TLS** com credencial e ACL por dispositivo. A instância central
+(FastAPI + PostgreSQL/TimescaleDB) faz a ingestão, executa as regras, controla
+os alarmes, oferece a API e o painel web e cuida da identidade (Keycloak).
 
-O Brasil possui aproximadamente 12% da superfície terrestre coberta por biomas altamente suscetíveis a incêndios — Cerrado, Amazônia, Caatinga e Pantanal — sendo que o período de estiagem prolongado eleva dramaticamente o índice de ocorrências. Segundo dados do INPE (Instituto Nacional de Pesquisas Espaciais), o país registra dezenas de milhares de focos de calor por ano, muitos dos quais poderiam ser mitigados com detecção antecipada.
+Não há hardware: todos os dispositivos são simulados em contêineres. Eles usam
+dados reais de clima (Open-Meteo) e de focos de calor por satélite (NASA FIRMS),
+e há um modo de incêndio forçado para a demonstração.
 
-No contexto da disciplina de Internet das Coisas, o presente trabalho propõe uma abordagem baseada em quatro princípios:
-
-1. **Heterogeneidade de fontes**: fusão de estimativas meteorológicas atuais (temperatura e umidade relativa) com detecções orbitais de focos de calor e um índice qualitativo derivado de fumaça.
-2. **Processamento na borda** (*edge computing*): a lógica de inferência de risco é executada no gateway, sem dependência de nuvem para decisões de latência crítica.
-3. **Comunicação assíncrona orientada a eventos**: o protocolo MQTT (Message Queuing Telemetry Transport) garante entrega confiável com overhead mínimo de protocolo.
-4. **Atuação automatizada**: comandos de resposta são emitidos pelo gateway e recebidos pelo atuador, fechando o laço de controle sem intervenção humana obrigatória.
-
----
-
-## 2. Arquitetura do Sistema
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        ARQUITETURA SENTINELA                        │
-├─────────────────┬───────────────────────────────────────────────────┤
-│  CAMADA DADOS   │  Open-Meteo + NASA FIRMS por zona geográfica       │
-│                 │  Meteorologia real + índice estimado de fumaça     │
-├─────────────────┼───────────────────────────────────────────────────┤
-│  CAMADA REDE    │  Broker MQTT (HiveMQ public / próprio)             │
-│                 │  Tópicos hierárquicos por zona e tipo              │
-├─────────────────┼───────────────────────────────────────────────────┤
-│  CAMADA BORDA   │  Gateway: subscrição, avaliação de risco,          │
-│  (Edge)         │  consulta NASA FIRMS, publicação de comandos       │
-├─────────────────┼───────────────────────────────────────────────────┤
-│  CAMADA         │  API REST NASA FIRMS (VIIRS/MODIS NRT)             │
-│  EXTERNA        │  Validação geoespacial de focos de calor           │
-├─────────────────┼───────────────────────────────────────────────────┤
-│  CAMADA         │  Atuador: recebe comandos, executa ações           │
-│  ATUAÇÃO        │  (brigada, monitoramento, silenciar)               │
-├─────────────────┼───────────────────────────────────────────────────┤
-│  CAMADA         │  Dashboard SENTINELA (React/TanStack)              │
-│  VISUALIZAÇÃO   │  React/TanStack local ou deploy web compatível     │
-└─────────────────┴───────────────────────────────────────────────────┘
-```
-
-### 2.1 Tecnologias Utilizadas e Responsabilidades
-
-| Tecnologia | Camada | Utilização no projeto |
-|------------|--------|-----------------------|
-| **Python 3** | Backend/edge | Implementa o coletor de telemetria, o gateway e o atuador. |
-| **requests** | Integração HTTP | Consulta os endpoints REST da Open-Meteo e da NASA FIRMS. |
-| **python-dotenv** | Configuração | Carrega broker, namespace MQTT, chave FIRMS, raios e intervalos a partir do `.env`. |
-| **paho-mqtt** | Mensageria backend | Publica e consome mensagens MQTT sobre TCP na porta 1883. |
-| **Open-Meteo** | Fonte externa | Fornece temperatura e umidade atuais estimadas para as coordenadas monitoradas, sem exigir chave. |
-| **NASA FIRMS / VIIRS** | Fonte orbital | Fornece focos de calor, coordenadas e FRP em tempo quase real; não mede diretamente fumaça ou temperatura do ar. |
-| **HiveMQ Public Broker** | Infraestrutura MQTT | Intermedeia a comunicação publish/subscribe da demonstração. Por ser público, não é indicado para produção. |
-| **React 19 + TypeScript** | Interface | Implementa os componentes reativos e a tipagem do dashboard. |
-| **TanStack Start/Router** | Aplicação web | Estrutura rotas, renderização no servidor (SSR), hidratação e build da aplicação. |
-| **Vite 8** | Ferramentas frontend | Executa o servidor de desenvolvimento e gera os bundles de produção. |
-| **Tailwind CSS 4** | Apresentação | Define layout responsivo, cores, tipografia e estados visuais. |
-| **mqtt.js** | Mensageria no navegador | Conecta o dashboard ao HiveMQ por MQTT sobre WebSocket seguro (`wss://...:8884/mqtt`). |
-| **Leaflet + React-Leaflet 5** | Geovisualização | Renderiza o mapa interativo, marcadores, popups, zoom e modo expandido. |
-| **OpenStreetMap + CARTO** | Cartografia | Fornecem os tiles e a base geográfica exibida pelo Leaflet. |
-| **Radix UI** | Componentes auxiliares | Disponibiliza primitivas acessíveis instaladas no frontend; o dashboard atual utiliza principalmente componentes próprios. |
-| **Lovable config** | Compatibilidade de projeto | Mantém a configuração de origem do frontend; a aplicação também funciona localmente sem depender da plataforma. |
-
-### 2.2 Topologia de Tópicos MQTT
-
-O namespace MQTT adota hierarquia em quatro níveis para possibilitar subscrições seletivas com wildcards:
-
-| Direção      | Padrão de Tópico                                                     | Descrição                          |
-|--------------|----------------------------------------------------------------------|------------------------------------|
-| Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/temperatura`             | Leitura de temperatura (°C)        |
-| Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/umidade`                 | Umidade relativa (%)               |
-| Sensor → GW  | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/sensor/fumaca`                  | Índice estimado de fumaça (0–100)  |
-| GW → Atuador | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/atuador/alerta`                 | Comando de alerta e ação           |
-| GW → Dashboard | `sentinela-iot-2026-joao-carol/monitoramento-br/{zona}/satelite/firms`               | Focos FIRMS, coordenadas e metadados |
-
-O gateway subscreve o padrão `sentinela-iot-2026-joao-carol/monitoramento-br/+/sensor/+` (wildcard `+` = um nível), recebendo automaticamente todos os sensores de todas as zonas cadastradas.
-
-### 2.3 Diagrama de Sequência — Evento de Risco Crítico
-
-```
-Sensor          Broker MQTT        Gateway         NASA FIRMS       Atuador
-  │                 │                 │                 │                │
-  │── pub(temp) ───>│                 │                 │                │
-  │── pub(umid) ───>│── msg(umid) ───>│                 │                │
-  │── pub(fum)  ───>│── msg(fum)  ───>│                 │                │
-  │                 │                 │── avalia_risco  │                │
-  │                 │                 │   → CRITICO     │                │
-  │                 │                 │── GET /api/area ─────────────>   │
-  │                 │                 │<── CSV(focos) ──────────────      │
-  │                 │                 │   firms=TRUE    │                │
-  │                 │<─ pub(alerta) ──│                 │                │
-  │                 │── msg(alerta) ──────────────────────────────────>  │
-  │                 │                 │                 │  acionar_brigada│
+```mermaid
+flowchart LR
+  subgraph EDGE["EDGE · dispositivos simulados"]
+    E["Estações (Python)"]
+    A["Atuadores da brigada (Python)"]
+    T["Terminais das prefeituras (Go)"]
+    F["Conector NASA FIRMS (Python)"]
+  end
+  subgraph FOG["FOG · nós de borda"]
+    B["borda-tocantins · borda-goias<br/>fila cifrada · regras locais"]
+  end
+  subgraph CLOUD["CLOUD · central"]
+    C["ingestão · regras · alarmes · assinaturas<br/>TimescaleDB · API · painel · Keycloak"]
+  end
+  E -- MQTT/TLS --> B
+  B -- "aciona sem a central" --> A
+  B -- "lotes HTTP (link intermitente)" --> C
+  C -- "comandos (bridge MQTT)" --> B
+  F -- MQTT/TLS --> C
+  C -- "alerta" --> T
+  T -- "recebido / reconhecido" --> C
 ```
 
----
+## Como rodar
 
-## 3. Componentes do Sistema
-
-### 3.1 Coletor de Telemetria (`sensor.py`)
-
-O coletor representa a camada de aquisição IoT de nove zonas geográficas. Temperatura e umidade são obtidas da Open-Meteo para as coordenadas de cada zona. Os focos de calor e o FRP são consultados na NASA FIRMS e convertidos em um **índice qualitativo estimado de fumaça** para manter compatibilidade com o motor acadêmico de regras. Pequeno ruído gaussiano representa a incerteza que existiria em sensores físicos.
-
-> **Limitação científica:** a NASA FIRMS não mede “percentual de fumaça”. Ela detecta anomalias térmicas e fogo ativo. Portanto, o campo `fumaca` é um índice derivado/proxy, e não uma concentração atmosférica medida. Uma medição real de fumaça local exigiria hardware como MQ-2 ou um serviço de qualidade do ar com PM2.5.
-
-**Parâmetros publicados a cada 3 segundos por zona:**
-
-| Campo        | Unidade | Origem | Atualização da fonte |
-|--------------|---------|--------|----------------------|
-| temperatura  | °C      | Open-Meteo | 10 minutos |
-| umidade      | %       | Open-Meteo | 10 minutos |
-| fumaca       | índice 0–100 | proxy derivado da NASA FIRMS | 30 minutos |
-
-**Formato de payload (JSON):**
-```json
-{
-  "valor": 72.3,
-  "timestamp": "2026-09-09T18:45:00.123456+00:00",
-  "fonte": "open-meteo"
-}
-```
-
-### 3.2 Gateway (`gateway.py`)
-
-Componente central da arquitetura. Responsável por:
-
-#### 3.2.1 Agregação de Estado por Zona
-Mantém um objeto `EstadoZona` thread-safe por zona, acumulando as três leituras antes de executar qualquer avaliação. Isso evita avaliações de risco com dados parciais (e.g., receber apenas fumaça sem umidade).
-
-#### 3.2.2 Motor de Regras — Avaliação de Risco
-
-A função `avaliar_risco(fumaca, umidade, temperatura)` implementa um conjunto de regras baseado em limiares físicos empiricamente estabelecidos:
-
-```
-SE  indice_fumaca ≥ 85  E  umidade < 15%            → CRÍTICO
-SE  indice_fumaca ≥ 60  E  umidade < 25%            → ALTO
-SE  indice_fumaca ≥ 40  OU umidade < 35%  OU temp > 33°C → MÉDIO
-SENÃO                                          → BAIXO
-```
-
-Neste protótipo acadêmico, a combinação entre índice elevado e baixa umidade aumenta o nível de risco. Trata-se de uma heurística determinística para demonstração do processamento de borda, não de um modelo físico validado nem de diagnóstico conclusivo de incêndio.
-
-#### 3.2.3 Integração NASA FIRMS
-
-O gateway consulta periodicamente a API FIRMS para **todas as zonas**, independentemente do risco meteorológico, usando um bounding box de ±0.15° (≈16,7 km) ao redor do centro monitorado. Isso permite que o mapa revele um foco orbital mesmo quando temperatura e umidade locais ainda estão normais. A fonte padrão é **VIIRS_SNPP_NRT** (Visible Infrared Imaging Radiometer Suite — Suomi NPP, Near Real-Time), com resolução nominal de 375 m e latência variável em função da passagem orbital e do processamento.
-
-**Endpoint consultado:**
-```
-GET https://firms.modaps.eosdis.nasa.gov/api/area/csv
-    /{MAP_KEY}/VIIRS_SNPP_NRT
-    /{west},{south},{east},{north}/{days}
-```
-
-O CSV retornado contém campos `latitude`, `longitude`, `brightness`, `frp` (Fire Radiative Power, em MW), `confidence`, `satellite`, `instrument`, `acq_date`, `acq_time` e `daynight`. O gateway preserva cada detecção individual e calcula:
-- **coordenadas exatas reportadas pelo produto orbital**;
-- **data e horário de aquisição**;
-- **satélite, instrumento e confiança**;
-- **FRP individual e FRP máximo da área**;
-- **distância à cidade**, calculada pela fórmula de Haversine;
-- **número total de focos** dentro da caixa pesquisada.
-
-O resultado completo é publicado com `retain=true` no tópico `satelite/firms`, permitindo que dashboards recém-conectados recebam a última varredura. O mapa desenha o raio de pesquisa, as cidades e os focos reais, com filtros de 6, 12 e 24 horas. Um cooldown padrão de **600 segundos** limita requisições repetidas.
-
-#### 3.2.4 Publicação de Alertas
-
-Quando o risco é **alto ou crítico**, o gateway publica no tópico `atuador/alerta` da zona um payload JSON completo com todos os dados do evento. Na implementação atual, o resultado FIRMS enriquece o alerta por meio de `firms_confirmado`, mas a ausência de foco orbital não bloqueia sua publicação; isso preserva a resposta a indícios locais e considera a latência e as limitações de cobertura do satélite:
-
-```json
-{
-  "zona": "mateiros",
-  "risco": "critico",
-  "temperatura": 47.2,
-  "umidade": 11.0,
-  "fumaca": 91.5,
-  "timestamp": "2026-09-09T18:45:00+00:00",
-  "firms_confirmado": true,
-  "firms_focos": 3,
-  "firms_frp_max": 2140.0,
-  "firms_dist_km": 1.2,
-  "acao": "acionar_brigada"
-}
-```
-
-### 3.3 Atuador (`atuador.py`)
-
-Recebe os pacotes de alerta do gateway e despacha ações de resposta. A arquitetura do atuador é extensível: cada ação é mapeada a uma função Python separada, facilitando a integração com sistemas externos (API de despacho de equipes, IoT de sirenes, SMS, etc.).
-
-| Ação                    | Risco disparador | Descrição                                    |
-|-------------------------|-----------------|----------------------------------------------|
-| `acionar_brigada`       | crítico         | Mobilização imediata de brigada de combate   |
-| `reforcar_monitoramento`| alto            | Aumento de frequência + notificação de equipe|
-| `silenciar_alerta`      | — (manual)      | Desativação de alarmes ativos                |
-
-Um mecanismo de **cooldown por zona × ação** (padrão: 30 s) previne o disparo repetido de ações idênticas em janelas curtas de tempo.
-
-### 3.4 Dashboard SENTINELA (Frontend)
-
-Interface web desenvolvida com **React 19**, **TypeScript**, **TanStack Router/Start**, **Vite 8** e **Tailwind CSS v4**. A geovisualização utiliza **Leaflet/React-Leaflet 5**, e a integração em tempo real usa **mqtt.js** sobre WebSocket seguro. O projeto preserva configuração compatível com Lovable, mas pode ser executado e implantado independentemente da plataforma.
-
-O dashboard opera por padrão em modo real: o módulo `iot.ts` estabelece uma conexão MQTT sobre WebSocket seguro (WSS), subscreve os tópicos de telemetria, alertas e resultados orbitais FIRMS e atualiza a interface imediatamente. O módulo `sim.ts` permanece disponível como modo de demonstração independente; para utilizá-lo, defina `VITE_DATA_MODE=sim` em `front/.env`.
-
-**Funcionalidades do dashboard:**
-- Visão geral de todas as zonas monitoradas com níveis de risco em tempo real
-- Mapa Leaflet interativo e expansível, com círculos das áreas pesquisadas e cidades coloridas por risco
-- Focos FIRMS nas coordenadas orbitais reais, com tamanho/cor por FRP e popup de horário, satélite, instrumento, confiança e distância
-- Filtro temporal no mapa para as últimas 6, 12 ou 24 horas
-- Feed de eventos ao vivo (crítico, regra, satélite, telemetria, sistema, atuador)
-- Log de eventos estilo terminal
-- Botões de comando MQTT (acionar brigada, reforçar, silenciar) com feedback visual
-- Gráfico de histórico de fumaça por zona (sparkline)
-
----
-
-## 4. Modelo de Dados e Protocolos
-
-### 4.1 Protocolo MQTT
-
-MQTT (*Message Queuing Telemetry Transport*) é um protocolo de mensageria publish/subscribe projetado para redes com largura de banda limitada e dispositivos com restrições de energia — características típicas de ambientes IoT. Opera sobre TCP/IP com overhead de pacote fixo de apenas 2 bytes no cabeçalho mínimo.
-
-**Configurações utilizadas:**
-
-| Parâmetro     | Valor             | Justificativa                           |
-|---------------|-------------------|-----------------------------------------|
-| Broker        | broker.hivemq.com | Broker público gratuito para prototipagem|
-| Porta         | 1883              | TCP sem TLS (ambiente de desenvolvimento)|
-| QoS (sensor)  | 0 (at most once)  | Dados de telemetria — perda ocasional aceitável |
-| QoS (alerta)  | 1 (at least once) | Broker confirma o recebimento; pode haver duplicação |
-| Keep-alive    | 60 s              | Detecção de desconexão dentro de 1 minuto |
-
-### 4.2 API NASA FIRMS
-
-A NASA disponibiliza o sistema FIRMS gratuitamente para usos acadêmicos e de pesquisa. A API REST suporta consultas por área geográfica (bounding box) e retorna dados NRT (*Near Real-Time*) das missões:
-
-- **VIIRS SNPP NRT**: resolução 375 m, cobertura global a cada ≈12h, latência ≈3h
-- **VIIRS NOAA-20 NRT**: resolução 375 m, complementar ao SNPP
-- **MODIS NRT**: resolução 1 km, maior cobertura histórica
-
-O FRP (Fire Radiative Power, em MW) é um indicador físico da potência radiativa emitida pelo fogo, correlacionada com a taxa de consumo de biomassa. Valores típicos para incêndios florestais variam de dezenas a milhares de MW.
-
----
-
-## 5. Configuração e Execução
-
-### 5.1 Pré-requisitos
-
-- Python 3.11+
-- Node.js 20+ (para o frontend)
-- Chave de acesso NASA FIRMS: [https://firms.modaps.eosdis.nasa.gov/api/](https://firms.modaps.eosdis.nasa.gov/api/)
-
-### 5.2 Instalação do Backend
+Pré-requisito: Docker com Compose v2.
 
 ```bash
-# Clonar o repositório
-git clone <url-do-repositorio>
-cd projeto-iot
-
-# Criar e ativar ambiente virtual
-python -m venv venv
-source venv/bin/activate        # Linux/macOS
-# venv\Scripts\activate         # Windows
-
-# Instalar dependências
-pip install -r requirements.txt
-
-# Configurar variáveis de ambiente
-cp .env.example .env
-# Editar .env e preencher FIRMS_MAP_KEY com sua chave da NASA
-```
-
-### 5.3 Execução — Ordem Recomendada
-
-Abra três terminais separados na raiz do projeto:
-
-```bash
-# Terminal 1 — Atuador (deve estar pronto antes do gateway publicar)
-python atuador.py
-
-# Terminal 2 — Gateway (motor de regras + FIRMS)
-python gateway.py
-
-# Terminal 3 — Coletor de dados Open-Meteo/FIRMS
-python sensor.py
-```
-
-### 5.3.1 Alternativa: Docker Compose
-
-Com `.env` preenchido (passo 5.2), sobe os 4 serviços (`atuador`, `gateway`,
-`sensor`, `front`) de uma vez, sem precisar de venv/Node instalados na máquina:
-
-```bash
+cp .env.example .env            # segredos de desenvolvimento (opcional: FIRMS_MAP_KEY)
 docker compose up -d --build
-docker compose logs -f          # acompanhar os 4 serviços
-docker compose down             # parar tudo
 ```
 
-O front fica em `http://localhost:3000` (build de produção, não o dev server
-do Vite). As variáveis `VITE_*` de `front/.env` são compiladas no build da
-imagem — se você editar `front/.env`, recrie a imagem do front
-(`docker compose up -d --build front`) para o novo valor entrar em vigor.
+| Endereço | O quê |
+|---|---|
+| http://localhost:3000 | painel web (login pelo Keycloak) |
+| http://localhost:8000/docs | API REST (Swagger, OpenAPI 3) |
+| http://localhost:8000/contratos/asyncapi.yaml | contrato MQTT |
+| http://localhost:8080 | Keycloak (realm `sentinela`) |
+| http://localhost:9090 | Prometheus (métricas e alertas operacionais) |
+| `localhost:8883` / `8884` / `8885` | MQTT/TLS: central, borda Tocantins e borda Goiás |
 
-### 5.4 Frontend (Desenvolvimento Local)
+Usuários de demonstração, senha `sentinela` (**só desenvolvimento**):
+`gestor.brigada`, `operador.brigada`, `integrador.brigada`, `leitor.brigada`,
+`gestor.anapolis` (e as outras prefeituras), `operador.anapolis` e `admin`
+(este exige configurar o TOTP).
+
+Para ver tudo funcionando: [roteiro de demonstração](docs/demonstracao.md). Um
+incêndio de teste em um comando:
 
 ```bash
-cd front
-npm install          # ou: bun install
-npm run dev
-# Acesse o endereço indicado pelo Vite (neste projeto, normalmente http://localhost:8080)
+pip install -r plataforma/requirements.txt
+python plataforma/simuladores/demo/cadastrar_alerta_publico.py   # cria o cenário urbano pela API
+python plataforma/simuladores/mock_incendio.py on pirenopolis    # e "off" para encerrar
 ```
 
-O frontend possui configuração própria em `front/.env`. O navegador não utiliza a porta MQTT TCP 1883; ele se conecta ao endpoint WSS definido por `VITE_MQTT_URL`. O valor de `VITE_MQTT_TOPIC_BASE` deve ser idêntico ao `MQTT_TOPIC_BASE` do `.env` localizado na raiz.
+## Documentação
 
-### 5.5 Variáveis de Ambiente
+| Documento | Conteúdo |
+|---|---|
+| [Arquitetura](docs/arquitetura.md) | camadas, edge/fog/cloud, implantação, hexagonal, pipeline de ingestão, mensagem canônica |
+| [Fluxos](docs/fluxos.md) | sequências: incêndio → prefeitura, zona sem borda, desconexão, regras na borda, comandos |
+| [Modelo de dados](docs/dados.md) | MER, hypertables, decisões do banco, fila da borda |
+| [MQTT, acesso e segurança](docs/mqtt-e-seguranca.md) | árvore de tópicos, ACL, credenciais, TLS, Keycloak e papéis, LGPD |
+| [Decisões de arquitetura (ADRs)](docs/adr/) | 11 decisões com contexto, alternativas e consequências |
+| [Kit do integrador](docs/integrador/) | guia, coleção de requisições e exemplos em Python, TypeScript e Go |
+| [Matriz de rastreabilidade](docs/rastreabilidade.md) | cada requisito do PDF → onde foi atendido → evidência |
+| [Roteiro de demonstração](docs/demonstracao.md) | passo a passo dos critérios de aceite (§9.3) |
+| [Operação](docs/operacao.md) | serviços, variáveis, simulação, testes, métricas, carga, problemas conhecidos |
+| [Histórico dos contratos](plataforma/contratos/CHANGELOG.md) | versões da mensagem canônica, AsyncAPI e API |
+| [Diagramas em PNG](docs/diagramas/) | os 14 diagramas exportados para slides e relatório |
 
-| Variável             | Padrão              | Descrição                                |
-|----------------------|---------------------|------------------------------------------|
-| `MQTT_BROKER`        | broker.hivemq.com   | Endereço do broker MQTT                  |
-| `MQTT_PORT`          | 1883                | Porta TCP do broker                      |
-| `MQTT_TOPIC_BASE`    | sentinela-iot-2026-joao-carol/monitoramento-br | Namespace isolado do projeto |
-| `FIRMS_MAP_KEY`      | —                   | **Obrigatório**: chave de acesso NASA FIRMS |
-| `FIRMS_SOURCE`       | VIIRS_SNPP_NRT      | Fonte de dados orbital                   |
-| `FIRMS_DAYS`         | 1                   | Janela temporal de busca (dias)          |
-| `FIRMS_RAIO_GRAUS`   | 0.15                | Raio de busca em graus (~16 km)          |
-| `SENSOR_REFRESH_METEO_MIN` | 10             | Atualização Open-Meteo no coletor        |
-| `SENSOR_REFRESH_FIRMS_MIN` | 30             | Atualização FIRMS no coletor              |
-| `FIRMS_COOLDOWN_SEG` | 600                 | Cooldown entre varreduras FIRMS por zona |
-| `ALERTA_COOLDOWN_SEG`| 30                  | Intervalo mínimo entre alertas da mesma zona |
-| `ACAO_COOLDOWN_SEG`  | 30                  | Cooldown entre ações repetidas (atuador) |
-| `MOCK_ZONA_INCENDIO` | — (vazio)           | Zona que ignora Open-Meteo/FIRMS e publica valores fixos de incêndio (ver 5.6) |
-| `MOCK_TEMPERATURA`   | 42.0                | Temperatura (°C) usada pela zona mockada |
-| `MOCK_UMIDADE`       | 10.0                | Umidade (%) usada pela zona mockada      |
-| `MOCK_FUMACA`        | 93.0                | Índice de fumaça (%) usado pela zona mockada |
-| `MOCK_LAT` / `MOCK_LON` | — (vazio)        | Coordenada opcional que reposiciona o marcador da zona mockada (ver 5.6) |
+## Situação da entrega
 
-### 5.6 Simulação de Incêndio (Mock)
+- **Essenciais:** 32 de 33 atendidos. A exceção é a ingestão HTTP local no nó de
+  borda (RF-EDG-01), que só aceita MQTT: o desenho prevê o HTTP, mas ele não foi
+  implementado.
+- **Critérios de aceite da §9.3:**
+  - urbano e rural integrados, com borda;
+  - desconexão de 72 h sem perda nem duplicata;
+  - domínio novo só por configuração;
+  - três linguagens (Python, Go e TypeScript).
+- **Teste de carga:** nenhuma mensagem perdida a 1.000 msg/s oferecidas, mas a
+  vazão sustentada é de ~750 msg/s numa máquina. As latências do RNF-02 só são
+  atendidas abaixo de ~700 msg/s.
 
-O `sensor.py` permite forçar uma zona específica a publicar valores fixos de
-incêndio crítico (fumaça alta, umidade baixa, temperatura alta), ignorando
-Open-Meteo/FIRMS só para ela — as demais zonas continuam com dados reais.
-Útil para demonstrar o fluxo completo (sensor → gateway → alerta → atuador)
-sem depender de um incêndio real acontecendo agora.
+O detalhamento, incluindo o que ficou fora e por quê, está na
+[matriz de rastreabilidade](docs/rastreabilidade.md).
 
-Zonas disponíveis: `anapolis`, `formosa`, `pirinopolis`, `jaragua`,
-`sandolandia`, `novo-progresso`, `mirador`, `mateiros`, `lagoa-da-confusao`.
+## Tecnologias
 
-**Opção A — no boot, via `.env`** (fixo até reiniciar o processo/container):
+| Camada | Tecnologia |
+|---|---|
+| Dispositivos (simulados) | Python (`paho-mqtt`), Go (`paho.mqtt.golang`) |
+| Borda | Python, Mosquitto 2.0 com bridge, SQLite (WAL) + Fernet |
+| Ingestão e barramento | Eclipse Mosquitto 2.0 (TLS 1.2+, ACL por dispositivo) |
+| Central | Python 3.12, FastAPI, SQLAlchemy Core, Alembic, jsonschema |
+| Dados | PostgreSQL 16 + TimescaleDB (hypertables, agregado contínuo) |
+| Identidade | Keycloak 26 (OIDC, PKCE, papéis, TOTP) |
+| Painel | React 19, TanStack Start/Router, react-query, Leaflet, keycloak-js |
+| Observabilidade | logs JSON com correlação, Prometheus |
+| Contratos | JSON Schema 2020-12, AsyncAPI 3, OpenAPI 3 |
+| Implantação e CI | Docker Compose, GitHub Actions (ruff, pytest, build, Go, front) |
 
-```bash
-# No .env da raiz
-MOCK_ZONA_INCENDIO=mateiros
-MOCK_TEMPERATURA=42.0
-MOCK_UMIDADE=10.0
-MOCK_FUMACA=93.0
-```
-
-```bash
-# Local
-python sensor.py
-
-# Docker — precisa recriar o container do sensor pra ler o .env atualizado
-docker compose up -d --force-recreate sensor
-```
-
-**Opção B — em tempo real, via `mock_incendio.py`** (não precisa reiniciar
-nada; funciona com o sensor local ou dentro do Docker). O script publica no
-mesmo tópico de comando que o `sensor.py` assina (`{MQTT_TOPIC_BASE}/comando/mock`):
-
-```bash
-# Ligar o mock em mateiros com os defaults do .env
-python mock_incendio.py on mateiros
-
-# Ligar com valores customizados (todos opcionais)
-python mock_incendio.py on mateiros --temperatura 45 --umidade 5 --fumaca 98
-
-# Ligar reposicionando o marcador no mapa (--lat/--lon juntos)
-python mock_incendio.py on mateiros --lat -10.55 --lon -46.30
-
-# Desligar (a zona volta a buscar dados reais e a coordenada real, ~3s)
-python mock_incendio.py off
-```
-
-Sem instalar nada além do `requirements.txt` — é o mesmo `paho-mqtt` que o
-resto do projeto já usa. Se preferir publicar manualmente (sem o script),
-o payload é `{"ativo": true, "zona": "<zona>", "temperatura": ..., "umidade": ..., "fumaca": ..., "lat": ..., "lon": ...}`
-para ligar ou `{"ativo": false}` para desligar, publicado no tópico acima —
-via [Mosquitto CLI](https://mosquitto.org/) (`mosquitto_pub -h broker.hivemq.com -p 1883 -t '<tópico>' -m '<payload>'`),
-Python (`paho.mqtt.publish.single(...)`) ou qualquer outro client MQTT.
-
-`lat`/`lon` são opcionais e devem ser enviados juntos. Quando presentes, o
-`sensor.py` republica a coordenada nos tópicos `.../sensor/lat` e `.../sensor/lon`
-(o front já assina `.../sensor/+`, então o marcador da zona se move no mapa sem
-recarregar a página), e o `gateway.py` — que também assina o tópico de comando —
-passa a consultar o FIRMS nessa coordenada em vez da real, enquanto o mock
-estiver ativo. Ao desligar, ambos voltam automaticamente para a coordenada
-real de `ZONA_COORDS`.
-
-A coordenada customizada precisa cair dentro do raio de busca FIRMS da zona
-(`FIRMS_RAIO_GRAUS`, o mesmo raio do círculo tracejado no mapa) — fora disso,
-`mock_incendio.py` já recusa localmente antes de publicar; se alguém publicar
-direto no MQTT sem passar pelo CLI, o `sensor.py` e o `gateway.py` também
-validam e ignoram a coordenada (mantendo a posição real), sem deixar de
-aplicar os demais valores mockados (temperatura/umidade/fumaça).
-
-Com `lat`/`lon` definidos, o `gateway.py` também **fabrica uma confirmação de
-satélite** na coordenada exata do mock (em vez de consultar a API real da
-NASA, que não teria foco nenhum ali) — assim o pin de "foco FIRMS" aparece no
-mapa (`FirmsMarkers` em `LeafletMapCore.tsx`), com popup de FRP/satélite/confiança,
-igual apareceria com uma detecção real. Isso só acontece na próxima varredura
-FIRMS da zona, respeitando o cooldown normal (`FIRMS_COOLDOWN_SEG`, padrão 600s
-— pode levar até esse tempo pra aparecer).
-
-No terminal do `sensor.py` (ou `docker compose logs -f sensor`), a zona mockada
-aparece marcada com `[MOCK INCÊNDIO]`; no MQTT, o payload publicado traz
-`"fonte": "mock"` em vez de `"open-meteo"`/`"firms-proxy"`.
-
----
-
-## 6. Mapeamento de Zonas
-
-As zonas monitoradas cobrem localidades de Goiás, Tocantins, Pará e Maranhão:
-
-| Zona              | UF | Lat       | Lon       | Sensor ID | Critério |
-|-------------------|----|-----------|-----------|-----------|----------|
-| Anápolis          | GO | -16.3267  | -48.9530  | GO-AN-01  | Zona solicitada |
-| Formosa           | GO | -15.5372  | -47.3372  | GO-FO-02  | Zona solicitada |
-| Pirenópolis       | GO | -15.8558  | -48.9597  | GO-PI-03  | Zona solicitada |
-| Jaraguá           | GO | -15.7529  | -49.3344  | GO-JA-04  | Zona solicitada |
-| Sandolândia       | TO | -12.5408  | -49.9192  | TO-SA-05  | Zona solicitada |
-| Novo Progresso    | PA | -7.1261   | -55.3853  | PA-NP-06  | Representante da Amazônia paraense |
-| Mirador           | MA | -6.3745   | -44.3683  | MA-MI-07  | Destaque nacional de área queimada em 2025 |
-| Mateiros          | TO | -10.5464  | -46.4168  | TO-MA-08  | Destaque nacional de área queimada em 2025 |
-| Lagoa da Confusão | TO | -10.7906  | -49.6199  | TO-LC-09  | Destaque nacional de área queimada em 2025 |
-
-A seleção dos três destaques adicionais usa o recorte de **área queimada municipal em 2025** divulgado pelo MapBiomas Fogo, e não uma afirmação permanente sobre a quantidade de focos. Rankings variam conforme período e indicador. Como “Amazônia” é uma região extensa, Novo Progresso (PA) permanece como ponto representativo. Para alterar coordenadas, mantenha `sensor.py`, `gateway.py`, `iot.ts` e `sim.ts` sincronizados.
-
----
-
-## 7. Fluxo de Decisão Completo
-
-```
-Open-Meteo ──► coletor ──► MQTT sensor ──► gateway ──► regra de risco
-                                               │              │
-                                               │              └─ alto/crítico ─► alerta MQTT ─► atuador
-                                               │
-                                               └─ a cada 600 s ─► NASA FIRMS
-                                                                      │
-                                                                      ├─ coordenadas dos focos
-                                                                      ├─ FRP / confiança / satélite
-                                                                      ├─ horário / período
-                                                                      └─ distância por Haversine
-                                                                                │
-                                                                                ▼
-                                                                  MQTT satelite/firms (retido)
-                                                                                │
-                                                                                ▼
-                                                                  dashboard + mapa interativo
-```
-
----
-
-## 8. Extensibilidade e Trabalhos Futuros
-
-- **TLS/mTLS no broker MQTT**: substituir broker público por instância privada com autenticação mútua por certificado X.509.
-- **Banco de dados de séries temporais**: integrar InfluxDB ou TimescaleDB para persistência e análise histórica das leituras.
-- **Geofencing dinâmico**: permitir configuração de zonas e coordenadas via API REST sem necessidade de redeploy.
-- **Machine Learning**: substituir o motor de regras estático por modelo de classificação treinado com dados históricos INPE/FIRMS.
-- **Hardware de campo**: substituir ou complementar as fontes remotas com ESP32, sensor MQ-2/PM2.5 para fumaça e DHT22 para temperatura/umidade, usando firmware MicroPython e obtendo medições ambientais locais.
-- **Integração com Defesa Civil**: webhook para notificação automática de órgãos públicos em caso de risco crítico confirmado.
-
----
-
-## 9. Estrutura do Repositório
+## Estrutura do repositório
 
 ```
 projeto-iot/
-├── sensor.py           # Coleta Open-Meteo/FIRMS e publica via MQTT
-├── gateway.py          # Motor de regras + integração NASA FIRMS + alertas
-├── atuador.py          # Recebe comandos e executa ações de resposta
-├── mock_incendio.py    # CLI para ligar/desligar o mock de incêndio em tempo real (ver 5.6)
-├── requirements.txt    # Dependências Python
-├── Dockerfile          # Imagem Python compartilhada (sensor/gateway/atuador)
-├── docker-compose.yml  # Orquestra os 4 serviços (backend + front)
-├── .dockerignore
-├── .env.example        # Template de variáveis de ambiente
-├── .env                # Configuração local (não versionado)
-├── .gitignore
-├── README.md           # Este documento
-└── front/              # Dashboard SENTINELA (React/TanStack/Vite)
-    ├── Dockerfile          # Build multi-stage (Nitro/node-server) + runtime
-    ├── src/
-    │   ├── routes/
-    │   │   └── index.tsx       # Página principal do dashboard
-    │   ├── components/
-    │   │   └── dashboard/
-    │   │       ├── ZoneCard.tsx    # Cartões de zona
-    │   │       ├── SidePanel.tsx      # Painel lateral (mapa, feed, comandos)
-    │   │       ├── FireMap.tsx        # Wrapper client-only do mapa
-    │   │       ├── LeafletMapCore.tsx # Mapa Leaflet interativo
-    │   │       └── StatusDot.tsx      # Indicador de status animado
-    │   └── lib/
-    │       ├── iot.ts              # MQTT WebSocket em tempo real
-    │       └── sim.ts              # Fallback de demonstração
-    └── package.json
+├── docker-compose.yml        # topologia completa (20 serviços, 3 redes)
+├── .env.example              # segredos de desenvolvimento (copie para .env)
+├── docs/                     # documentação da 2ª entrega (este índice acima)
+├── front/                    # painel web (React + TanStack Start)
+└── plataforma/
+    ├── contratos/            # mensagem canônica (JSON Schema), AsyncAPI, exemplos, CHANGELOG
+    ├── nucleo/               # domínio compartilhado central + borda (hexagonal)
+    ├── central/              # instância central: API, ingestão, motor, ações, migrations, seed
+    ├── borda/                # nó de borda (fog): fila cifrada, regras locais, sincronização
+    ├── simuladores/          # estações, atuadores, conector FIRMS, terminal Go, carga, demo
+    ├── infra/                # PKI, Mosquitto, Keycloak, Prometheus
+    └── tests/                # pytest: núcleo, borda, contrato, integração da central
 ```
 
----
+## Zonas monitoradas
 
-## 10. Referências
+| Zona | UF | Nó de borda | Critério de escolha |
+|---|---|---|---|
+| Anápolis, Formosa, Pirenópolis, Jaraguá | GO | `borda-goias` | zonas solicitadas no trabalho |
+| Sandolândia | TO | `borda-tocantins` | zona solicitada no trabalho |
+| Mateiros, Lagoa da Confusão | TO | `borda-tocantins` | destaques nacionais de área queimada em 2025 (MapBiomas Fogo) |
+| Mirador | MA | — (conexão direta) | destaque nacional de área queimada em 2025 |
+| Novo Progresso | PA | — (conexão direta) | ponto representativo da Amazônia paraense |
 
-- **MQTT Protocol Specification v3.1.1** — OASIS Standard, 2014. Disponível em: [https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/)
-- **NASA FIRMS — Fire Information for Resource Management System**. Disponível em: [https://firms.modaps.eosdis.nasa.gov/](https://firms.modaps.eosdis.nasa.gov/)
-- **Open-Meteo Weather API** — dados meteorológicos atuais por coordenada. Disponível em: [https://open-meteo.com/](https://open-meteo.com/)
-- **VIIRS 375m Active Fire Product**. Schroeder, W. et al. *Remote Sensing of Environment*, 2014.
-- **INPE — Programa Queimadas**. Instituto Nacional de Pesquisas Espaciais. Disponível em: [https://queimadas.dgi.inpe.br/](https://queimadas.dgi.inpe.br/)
-- **MapBiomas Fogo — Mapeamento Anual**. Estatísticas de área queimada por município, inclusive 2025. Disponível em: [https://brasil.mapbiomas.org/iniciativas-e-produtos/fogo/mapeamento-anual/anual/](https://brasil.mapbiomas.org/iniciativas-e-produtos/fogo/mapeamento-anual/anual/)
-- **paho-mqtt** — Eclipse Foundation. Python Client for MQTT. Disponível em: [https://github.com/eclipse/paho.mqtt.python](https://github.com/eclipse/paho.mqtt.python)
-- **TanStack Start** — Documento oficial. Disponível em: [https://tanstack.com/start](https://tanstack.com/start)
-- **Lovable Platform**. Disponível em: [https://lovable.dev/](https://lovable.dev/)
+As prefeituras de Anápolis, Formosa, Pirenópolis e Jaraguá são os inquilinos
+urbanos, cada uma com Defesa Civil e bombeiros.
 
----
+## Referências
 
-*Projeto desenvolvido para a disciplina de Internet das Coisas — 2026.*
+- Documento de Requisitos — Plataforma IoT Integrada, v2.0. UniEVANGÉLICA, 2026.
+- OASIS. *MQTT Version 3.1.1* (2014) e *MQTT Version 5.0* (2019).
+- NASA FIRMS — Fire Information for Resource Management System. https://firms.modaps.eosdis.nasa.gov/
+- Schroeder, W. et al. The New VIIRS 375 m active fire detection data product. *Remote Sensing of Environment*, 2014.
+- Open-Meteo Weather API. https://open-meteo.com/
+- INPE — Programa Queimadas. https://queimadas.dgi.inpe.br/
+- MapBiomas Fogo — Mapeamento anual de área queimada. https://brasil.mapbiomas.org/
+- Hohpe, G.; Woolf, B. *Enterprise Integration Patterns*. Addison-Wesley, 2003.
+- Cockburn, A. *Hexagonal Architecture (Ports and Adapters)*, 2005.
+- Timescale. TimescaleDB documentation. https://docs.timescale.com/
+- Keycloak documentation. https://www.keycloak.org/documentation
+- Eclipse Mosquitto. https://mosquitto.org/
+- Brasil. Lei nº 13.709/2018 (LGPD).

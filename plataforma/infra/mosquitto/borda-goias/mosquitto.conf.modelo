@@ -1,0 +1,45 @@
+# Broker local do nó de borda borda-goias (camada fog).
+# Os dispositivos do campo só falam com este broker; a internet da fazenda
+# pode cair sem que eles percebam. Senhas/ACL vêm da central e ficam no disco
+# do nó: sem link, os dispositivos locais continuam autenticando.
+
+persistence true
+persistence_location /mosquitto/data/
+log_dest stdout
+log_type error
+log_type warning
+log_type notice
+
+per_listener_settings false
+allow_anonymous false
+password_file /mosquitto/acesso/senhas
+acl_file /mosquitto/acesso/acl
+
+listener 8883
+protocol mqtt
+cafile /pki/ca.crt
+certfile /pki/mosquitto-borda-goias.crt
+keyfile /pki/mosquitto-borda-goias.key
+tls_version tlsv1.2
+
+# ── Bridge com a central: só DESCE comandos para os dispositivos destes sites ──
+# TLS verificado contra a CA própria e autenticada com a credencial da borda.
+# cleansession false: a central guarda os comandos QoS 1 enquanto o link está
+# fora e os entrega quando ele volta (store-and-forward no sentido nuvem → campo).
+# A subida (telemetria/eventos) NÃO usa a bridge: vai pelo nó de borda, em lotes
+# HTTP com confirmação por mensagem.
+connection central
+address mosquitto-central:8883
+bridge_cafile /pki/ca.crt
+bridge_tls_version tlsv1.2
+remote_username borda-goias
+remote_password ${BRIDGE_SENHA}
+remote_clientid bridge-borda-goias
+cleansession false
+restart_timeout 2 30
+# detecta a queda do link em ~15 s (padrão 60 s deixaria comandos parados por mais de um minuto)
+keepalive_interval 10
+topic brigada-cerrado/anapolis/+/+/comando in 1
+topic brigada-cerrado/formosa/+/+/comando in 1
+topic brigada-cerrado/pirenopolis/+/+/comando in 1
+topic brigada-cerrado/jaragua/+/+/comando in 1

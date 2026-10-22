@@ -1,0 +1,36 @@
+[
+  {
+    "nome": "risco-critico",
+    "severidade": "critico",
+    "condicao": {
+      "todas": [
+        { "grandeza": "fumaca", "op": ">=", "valor": 85 },
+        { "grandeza": "umidade", "op": "<", "valor": 15 }
+      ]
+    },
+    "acoes": [{ "tipo": "comando", "acao": "acionar_brigada" }]
+  },
+  {
+    "nome": "risco-alto",
+    "severidade": "alto",
+    "condicao": {
+      "todas": [
+        { "grandeza": "fumaca", "op": ">=", "valor": 60 },
+        { "grandeza": "umidade", "op": "<", "valor": 25 }
+      ]
+    },
+    "acoes": [{ "tipo": "comando", "acao": "reforcar_monitoramento" }]
+  },
+  {
+    "nome": "risco-medio",
+    "severidade": "medio",
+    "condicao": {
+      "alguma": [
+        { "grandeza": "fumaca", "op": ">=", "valor": 40 },
+        { "grandeza": "umidade", "op": "<", "valor": 35 },
+        { "grandeza": "temperatura", "op": ">", "valor": 33 }
+      ]
+    },
+    "acoes": []
+  }
+]

@@ -8,10 +8,13 @@ import { Circle, CircleMarker, MapContainer, Popup, TileLayer, Tooltip } from "r
 import "leaflet/dist/leaflet.css";
 import type { Zone } from "@/lib/iot";
 
+// Mapa base escuro da Esri (sem chave de API; os tiles escuros da CARTO passaram a exigir chave)
 const TILE_URL =
-  "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}";
+const TILE_NOMES_URL =
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 const TILE_ATTR =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com">CARTO</a>';
+  'Tiles &copy; <a href="https://www.esri.com">Esri</a> &mdash; Esri, HERE, Garmin, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
 
 const RISK_COLOR: Record<string, string> = {
   baixo:   "#22c55e",
@@ -173,7 +176,8 @@ export default function LeafletMapCore({ zones, zoom = 5, interactive = false, w
       touchZoom={interactive}
       style={{ background: "#0d1117" }}
     >
-      <TileLayer url={TILE_URL} attribution={TILE_ATTR} />
+      <TileLayer url={TILE_URL} attribution={TILE_ATTR} maxZoom={16} />
+      <TileLayer url={TILE_NOMES_URL} maxZoom={16} />
       <ZoneMarkers zones={zones} windowHours={windowHours} />
       <FirmsMarkers zones={zones} windowHours={windowHours} />
     </MapContainer>

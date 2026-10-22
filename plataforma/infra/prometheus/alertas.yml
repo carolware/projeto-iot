@@ -1,0 +1,53 @@
+# Alertas operacionais da própria plataforma (saúde, não incêndio): RF-OBS-04/05.
+# Ver em http://localhost:9090/alerts
+groups:
+  - name: plataforma
+    rules:
+      - alert: ServicoFora
+        expr: up == 0
+        for: 30s
+        labels: { severidade: critico }
+        annotations:
+          resumo: "{{ $labels.job }} ({{ $labels.instance }}) não responde às coletas"
+
+      - alert: BordaSemSincronizar
+        expr: time() - borda_ultimo_sync_timestamp > 60
+        for: 30s
+        labels: { severidade: alto }
+        annotations:
+          resumo: "{{ $labels.borda }} sem sincronizar com a central há {{ $value | humanizeDuration }}"
+
+      - alert: FilaDaBordaCrescendo
+        expr: borda_fila_pendente > 500 and deriv(borda_fila_pendente[2m]) > 0
+        for: 1m
+        labels: { severidade: medio }
+        annotations:
+          resumo: "{{ $labels.borda }} acumulando mensagens ({{ $value }} pendentes)"
+
+      - alert: MensagensRecusadas
+        expr: sum(rate(sentinela_mensagens_total{status="recusada"}[5m])) > 0.1
+        for: 2m
+        labels: { severidade: medio }
+        annotations:
+          resumo: "ingestão mandando mensagens para a DLQ ({{ $value | humanize }}/s)"
+
+      - alert: MotorAtrasado
+        expr: sentinela_motor_fila > 1000
+        for: 1m
+        labels: { severidade: alto }
+        annotations:
+          resumo: "motor de regras com {{ $value }} mensagens na fila"
+
+      - alert: LatenciaIngestaoAlta
+        expr: histogram_quantile(0.95, sum by (le) (rate(sentinela_ingestao_latencia_segundos_bucket{canal="mqtt"}[5m]))) > 2
+        for: 5m
+        labels: { severidade: medio }
+        annotations:
+          resumo: "p95 da ingestão MQTT acima de 2 s (RNF-02)"
+
+      - alert: AcoesFalhando
+        expr: sum by (tipo) (rate(sentinela_acoes_total{status="falha"}[5m])) > 0
+        for: 5m
+        labels: { severidade: medio }
+        annotations:
+          resumo: "ações do tipo {{ $labels.tipo }} falhando (em retentativa)"

@@ -1,28 +1,23 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useClock, useIot, type Zone } from "@/lib/iot";
-import { StatusDot } from "@/components/dashboard/StatusDot";
+import { useSessao } from "@/lib/auth";
+import { useClock, useIot, usePainel, useTempoReal, type Zone } from "@/lib/iot";
 import { ZoneCard, ZoneHero } from "@/components/dashboard/ZoneCard";
 import { SidePanel } from "@/components/dashboard/SidePanel";
 import { ZoneModal } from "@/components/dashboard/ZoneModal";
+import { StatusDot } from "@/components/dashboard/StatusDot";
+import { ListaAlarmes } from "@/components/alarmes/ListaAlarmes";
+import { Casco, Secao, quando } from "@/components/layout/Casco";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "SENTINELA — Monitoramento de Incêndios Florestais" },
+      { title: "SENTINELA — Plataforma IoT Integrada" },
       {
         name: "description",
         content:
-          "Dashboard IoT de monitoramento de incêndios: sensores de temperatura, umidade e fumaça por zona, regras de risco, confirmação via satélite NASA FIRMS e comandos MQTT.",
+          "Painel da Plataforma IoT Integrada: estações de detecção de incêndio por zona, decisão nos nós de borda, alarmes e alertas às prefeituras.",
       },
-      { property: "og:title", content: "SENTINELA — Monitoramento de Incêndios Florestais" },
-      {
-        property: "og:description",
-        content:
-          "Painel em tempo real de sensores IoT por zona, avaliação de risco de incêndio e alertas via MQTT com confirmação por satélite.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
   component: Index,
@@ -35,18 +30,20 @@ function fmtUptime(sec: number) {
   return `${h}:${m}:${s}`;
 }
 
-/** Isolados do resto da página: só esses dois nós re-renderizam a cada 1s. */
-function Clock() {
-  const { clock } = useClock();
-  return <div className="hidden md:block pl-4 border-l border-hair text-faint tabular-nums">{clock}</div>;
-}
-
 function Uptime() {
   const { uptimeSec } = useClock();
   return <span className="tabular-nums">{fmtUptime(uptimeSec)}</span>;
 }
 
 function Index() {
+  const { eu } = useSessao();
+  return eu.cenario === "urbano" ? <PainelPrefeitura /> : <PainelRural />;
+}
+
+// ── Inquilino rural: as zonas monitoradas ────────────────────────────────────
+
+function PainelRural() {
+  const { pode } = useSessao();
   const state = useIot();
   const { zones } = state;
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
@@ -61,46 +58,13 @@ function Index() {
   const selectedZone: Zone | undefined = selectedZoneId ? zones.find((z) => z.id === selectedZoneId) : undefined;
 
   return (
-    <div className="min-h-screen flex flex-col bg-ink text-fg font-body text-sm antialiased">
-      {/* SYSTEM BAR */}
-      <header className="sticky top-0 z-10 border-b border-hair bg-ink/95 backdrop-blur-sm">
-        <div className="flex items-center gap-6 px-5 py-2.5">
-          <div className="flex items-baseline gap-2.5">
-            <span className="font-display text-[19px] tracking-wide text-fg leading-none">SENTINELA</span>
-            <span className="font-mono text-[10px] text-ember tracking-[0.15em]">REDE SENSORES v0.3</span>
-          </div>
-          <div className="hidden lg:flex items-center gap-2 font-mono text-[10px] text-faint tracking-[0.2em]">
-            <span>POSTO DE VIGILÂNCIA</span>
-            <span className="text-hair">/</span>
-            <span>GO · TO · PA · MA</span>
-          </div>
-          <div className="ml-auto flex items-center gap-4 sm:gap-5 font-mono text-[11px]">
-            <div className="flex items-center gap-1.5">
-              <StatusDot color={state.mqttConnected ? "bg-ok" : "bg-danger"} duration={2} />
-              <span className="text-fg">MQTT</span>
-              <span className="text-faint hidden sm:inline">{state.mqttConnected ? `conectado · ${state.dataMode}` : "desconectado"}</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <StatusDot color="bg-ok" duration={2.4} />
-              <span className="text-fg">GATEWAY</span>
-              <span className="text-faint hidden sm:inline">ativo</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <StatusDot color="bg-warn" duration={1.6} />
-              <span className="text-fg">NASA FIRMS</span>
-              <span className="text-faint hidden sm:inline">sincronizando</span>
-            </div>
-            <Clock />
-          </div>
-        </div>
-      </header>
-
+    <Casco titulo="Painel de zonas monitoradas" conectado={state.mqttConnected}>
       {/* MISSION STRIP */}
       <section className="border-b border-hair px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
           <div className="flex items-center gap-4">
             <span className="font-mono text-[10px] tracking-[0.25em] text-faint">01 — VISÃO DE CONJUNTO</span>
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2.5" aria-live="polite">
               {alertZones.length > 0 ? (
                 <>
                   <span className="size-2 rounded-full bg-danger" style={{ animation: "softpulse 1.2s ease-in-out infinite" }} />
@@ -122,11 +86,10 @@ function Index() {
               <span className="text-faint">ZONAS</span> <span className="text-fg tabular-nums ml-1">{zones.length}</span>
             </div>
             <div>
-              <span className="text-faint">ÍNDICE ALTO</span>{" "}
-              <span className="text-warn tabular-nums ml-1">{highSmoke}</span>
+              <span className="text-faint">ÍNDICE ALTO</span> <span className="text-warn tabular-nums ml-1">{highSmoke}</span>
             </div>
             <div>
-              <span className="text-faint">FALHAS</span>{" "}
+              <span className="text-faint">OFFLINE</span>{" "}
               <span className={`tabular-nums ml-1 ${offline > 0 ? "text-danger" : "text-ok"}`}>{offline}</span>
             </div>
           </div>
@@ -135,7 +98,9 @@ function Index() {
 
       {/* GRID */}
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-4 px-5 py-4">
-        <section>
+        <section aria-label="Zonas">
+          {state.erro && <div role="alert" className="mb-3 font-mono text-[11px] text-danger">{state.erro}</div>}
+          {state.carregando && <div className="font-mono text-[11px] text-faint">carregando zonas…</div>}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {hero && <ZoneHero zone={hero} index={0} onSelect={(z) => setSelectedZoneId(z.id)} />}
             {rest.map((z, i) => (
@@ -143,20 +108,59 @@ function Index() {
             ))}
           </div>
         </section>
-        <SidePanel state={state} />
+        <SidePanel state={state} podeComandar={pode("operador", "gestor")} />
       </main>
 
-      {/* FOOTER */}
       <footer className="border-t border-hair px-5 py-2.5 flex items-center justify-between font-mono text-[10px] text-faint">
-        <span>SENTINELA · protocolo iot · dados {state.dataMode === "mqtt" ? "MQTT em tempo real" : "simulados no front"}</span>
+        <span>SENTINELA · dados da central (API + tempo real) · risco classificado pelas regras do inquilino</span>
         <span className="tabular-nums">
-          broker 12ms · uptime <Uptime /> · {zones.length} zonas · {critical} crítica
+          sessão <Uptime /> · {zones.length} zonas · {critical} crítica
         </span>
       </footer>
 
-      {selectedZone && (
-        <ZoneModal zone={selectedZone} state={state} onClose={() => setSelectedZoneId(null)} />
-      )}
-    </div>
+      {selectedZone && <ZoneModal zone={selectedZone} state={state} onClose={() => setSelectedZoneId(null)} />}
+    </Casco>
+  );
+}
+
+// ── Inquilino urbano (prefeitura): alertas recebidos e terminais ─────────────
+
+function PainelPrefeitura() {
+  const { data, isLoading } = usePainel();
+  const conectado = useTempoReal();
+  const terminais = (data?.sites ?? []).flatMap((s) =>
+    s.dispositivos.filter((d) => d.tipo === "terminal").map((d) => ({ ...d, local: s.nome })),
+  );
+  return (
+    <Casco titulo="Painel da prefeitura" conectado={conectado}>
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] items-start gap-4 px-5 py-4">
+        <Secao titulo="01 — ALERTAS RECEBIDOS (ASSINATURAS)">
+          <ListaAlarmes abertos />
+        </Secao>
+        <div className="flex flex-col gap-4">
+          <Secao titulo="02 — TERMINAIS DE ALERTA">
+            {isLoading ? (
+              <div className="font-mono text-[11px] text-faint">carregando…</div>
+            ) : terminais.length === 0 ? (
+              <div className="font-mono text-[11px] text-faint">Nenhum terminal cadastrado.</div>
+            ) : (
+              <ul className="space-y-2 font-mono text-[11px]">
+                {terminais.map((t) => (
+                  <li key={t.slug} className="flex items-center gap-2 rounded border border-hair bg-surface-2 px-3 py-2">
+                    <StatusDot color={t.online ? "bg-ok" : "bg-danger"} duration={2} />
+                    <span className="text-fg">{t.slug}</span>
+                    <span className="text-faint">{t.local}</span>
+                    <span className="ml-auto text-faint text-[10px]">{t.online ? "online" : `offline · ${quando(t.ultimo_contato_em)}`}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Secao>
+          <Secao titulo="03 — HISTÓRICO">
+            <ListaAlarmes abertos={false} compacta />
+          </Secao>
+        </div>
+      </main>
+    </Casco>
   );
 }

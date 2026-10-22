@@ -1,0 +1,84 @@
+### Coleção de requisições do integrador — Sentinela
+# Funciona no VS Code (extensão REST Client) e no IntelliJ (HTTP Client).
+# Ordem: 1 → 2 → 3 (anote a credencial) → 4 … 9.
+
+@api = http://localhost:8000
+@keycloak = http://localhost:8080/realms/sentinela
+@slug = sensor-teste-01
+
+### 1. Token do integrador (só desenvolvimento: password grant do cliente "cli")
+# @name login
+POST {{keycloak}}/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&client_id=cli&username=integrador.brigada&password=sentinela
+
+###
+@token = {{login.response.body.access_token}}
+
+### 2. Perfis disponíveis no domínio incendio (grandezas, unidades, faixas)
+GET {{api}}/api/v1/catalogo/perfis?dominio=incendio
+Authorization: Bearer {{token}}
+
+### 3. Cadastrar o dispositivo — a resposta traz a credencial UMA vez
+# @name cadastro
+POST {{api}}/api/v1/dispositivos
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "slug": "{{slug}}",
+  "nome": "Sensor de teste do integrador",
+  "tipo": "estacao",
+  "dominio": "incendio",
+  "perfil": "estacao-incendio",
+  "site": "mirador",
+  "fabricante": "Equipe X",
+  "firmware": "0.1.0"
+}
+
+###
+@credencial = {{cadastro.response.body.credencial}}
+
+### 4. Contrato publicado (JSON Schema): valide a mensagem localmente antes de enviar
+GET {{api}}/contratos/mensagem-canonica.v1.schema.json
+
+### 5. Enviar uma leitura por HTTPS, autenticado como o próprio dispositivo
+POST {{api}}/api/v1/ingestao
+Authorization: Basic {{slug}}:{{credencial}}
+Content-Type: application/json
+
+{
+  "versao": "1.0",
+  "id_mensagem": "{{$guid}}",
+  "dispositivo": "{{slug}}",
+  "tipo": "telemetria",
+  "timestamp": "{{$datetime iso8601}}",
+  "medidas": [
+    { "grandeza": "temperatura", "valor": 31.5, "unidade": "Cel" },
+    { "grandeza": "umidade", "valor": 22, "unidade": "%" },
+    { "grandeza": "fumaca", "valor": 12, "unidade": "1" }
+  ]
+}
+
+### 6. Mensagem inválida → 400 com a lista de erros (e registro na DLQ)
+POST {{api}}/api/v1/ingestao
+Authorization: Basic {{slug}}:{{credencial}}
+Content-Type: application/json
+
+{ "versao": "1.0", "dispositivo": "{{slug}}", "tipo": "telemetria" }
+
+### 7. Último estado (sem consultar o histórico)
+GET {{api}}/api/v1/dispositivos/{{slug}}/estado
+Authorization: Bearer {{token}}
+
+### 8. Histórico da última hora
+GET {{api}}/api/v1/dispositivos/{{slug}}/telemetria?grandeza=temperatura&tamanho=20
+Authorization: Bearer {{token}}
+
+### 9. Gerar outra credencial (a anterior deixa de valer) ou revogar
+POST {{api}}/api/v1/dispositivos/{{slug}}/credencial
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{}

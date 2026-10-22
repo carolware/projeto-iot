@@ -1,0 +1,28 @@
+# Broker da instância central (cloud).
+# Sem acesso anônimo: cada dispositivo/serviço tem credencial própria e uma ACL
+# que restringe os tópicos (gerados pela central em /mosquitto/acesso).
+
+persistence true
+persistence_location /mosquitto/data/
+log_dest stdout
+log_type error
+log_type warning
+log_type notice
+
+# fila por sessão persistente (a da central): com o padrão de 1000, um pico ou um
+# reinício da central descartaria mensagens QoS 1 no broker (RNF-01, RNF-10)
+max_queued_messages 200000
+max_inflight_messages 1000
+
+per_listener_settings false
+allow_anonymous false
+password_file /mosquitto/acesso/senhas
+acl_file /mosquitto/acesso/acl
+
+# MQTT sobre TLS 1.2+ (dispositivos diretos, bridges das bordas, serviços)
+listener 8883
+protocol mqtt
+cafile /pki/ca.crt
+certfile /pki/mosquitto-central.crt
+keyfile /pki/mosquitto-central.key
+tls_version tlsv1.2
